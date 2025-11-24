@@ -95,7 +95,7 @@ defaults:
     # weight initialization mode
     weight_initialization_mode: "kaiming_uniform"
     # actor type, options: gaussian, gaussian_learning
-    actor_type: gaussian_learning
+    actor_type: categorical
     # linear learning rate decay
     linear_lr_decay: True
     # exploration noise anneal

@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from gymnasium import spaces
 
 from omnisafe.envs.core import CMDP, make, support_envs
 from omnisafe.envs.wrapper import (
@@ -135,7 +136,8 @@ class OnlineAdapter:
             self._env = RewardNormalize(self._env, device=self._device)
         if cost_normalize:
             self._env = CostNormalize(self._env, device=self._device)
-        self._env = ActionScale(self._env, low=-1.0, high=1.0, device=self._device)
+        if isinstance(self._env.action_space, spaces.Box):
+            self._env = ActionScale(self._env, low=-1.0, high=1.0, device=self._device)
         if self._env.num_envs == 1:
             self._env = Unsqueeze(self._env, device=self._device)
 
@@ -165,7 +167,8 @@ class OnlineAdapter:
             self._eval_env = AutoReset(self._eval_env, device=self._device)
         if obs_normalize:
             self._eval_env = ObsNormalize(self._eval_env, device=self._device)
-        self._eval_env = ActionScale(self._eval_env, low=-1.0, high=1.0, device=self._device)
+        if isinstance(self._env.action_space, spaces.Box):
+            self._eval_env = ActionScale(self._eval_env, low=-1.0, high=1.0, device=self._device)
         self._eval_env = Unsqueeze(self._eval_env, device=self._device)
 
     @property

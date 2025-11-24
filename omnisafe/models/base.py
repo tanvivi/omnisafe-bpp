@@ -70,6 +70,8 @@ class Actor(nn.Module, ABC):
 
         if isinstance(self._act_space, spaces.Box) and len(self._act_space.shape) == 1:
             self._act_dim: int = self._act_space.shape[0]
+        elif isinstance(self._act_space, spaces.Discrete):
+            self._act_dim: int = self._act_space.n
         else:
             raise NotImplementedError
 
@@ -207,5 +209,7 @@ class Critic(nn.Module, ABC):
 
         if isinstance(self._act_space, spaces.Box) and len(self._act_space.shape) == 1:
             self._act_dim = self._act_space.shape[0]
+        elif isinstance(self._act_space, spaces.Discrete): # for discrete action space
+            self._act_dim: int = self._act_space.n
         else:
             raise NotImplementedError

@@ -19,7 +19,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 import torch
-from gymnasium.spaces import Box
+from gymnasium.spaces import Box, Discrete
 
 from omnisafe.typing import DEVICE_CPU, OmnisafeSpace
 
@@ -76,6 +76,8 @@ class BaseBuffer(ABC):
             raise NotImplementedError
         if isinstance(act_space, Box):
             act_buf = torch.zeros((size, *act_space.shape), dtype=torch.float32, device=device)
+        elif isinstance(act_space, Discrete):
+            act_buf = torch.zeros((size, 1), dtype=torch.long, device=device) # in discrete action space, action is with one integer, so only takes 1
         else:
             raise NotImplementedError
 

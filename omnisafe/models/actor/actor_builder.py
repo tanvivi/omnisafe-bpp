@@ -22,6 +22,7 @@ from omnisafe.models.actor.mlp_actor import MLPActor
 from omnisafe.models.actor.perturbation_actor import PerturbationActor
 from omnisafe.models.actor.vae_actor import VAE
 from omnisafe.models.base import Actor
+from omnisafe.models.actor.categorical_actor import CategoricalActor
 from omnisafe.typing import Activation, ActorType, InitFunction, OmnisafeSpace
 
 
@@ -74,6 +75,14 @@ class ActorBuilder:
         Raises:
             NotImplementedError: If the actor type is not implemented.
         """
+        if actor_type == 'categorical':
+            return CategoricalActor(
+                self._obs_space,
+                self._act_space,
+                self._hidden_sizes,
+                activation=self._activation,
+                weight_initialization_mode=self._weight_initialization_mode,
+            )
         if actor_type == 'gaussian_learning':
             return GaussianLearningActor(
                 self._obs_space,
