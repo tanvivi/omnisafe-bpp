@@ -30,9 +30,14 @@ class CategoricalActor(Actor):
         Return: the categorical distribution
         """
         logits = self.net(obs)
-        if logits.dim() == 2:
-            logits = logits.unsqueeze(1)
-        return Categorical(logits=logits) # important, used to avoid being considered as probs
+        mask = obs[..., :self._act_dim]
+        HUGE_NEG = -1e8
+        masked_logits = torch.where(mask > 0.5, logits, torch.tensor(HUGE_NEG, device=logits.device, dtype=logits.dtype))
+        all_masked = (mask <= 0.5).all(dim=-1, keepdim=True)
+        masked_logits = torch.where(all_masked, logits, masked_logits)
+        if masked_logits.dim() == 2:
+            masked_logits = masked_logits.unsqueeze(1)
+        return Categorical(logits=masked_logits) # important, used to avoid being considered as probs
     
     def forward(self, obs: torch.Tensor)-> Distribution:
         """
