@@ -11,11 +11,13 @@ class CategoricalActor(Actor):
         self.item_dim = item_dim
         self.bin_state_dim = bin_state_dim
         input_dim = self.bin_state_dim + self.item_dim
+        self.logits_scale = 0.2
         self.net: torch.nn.Module = build_mlp_network(
             sizes=[input_dim, *self._hidden_sizes, 1],
             activation=activation,
             weight_initialization_mode=weight_initialization_mode,
         )
+        self.ln = torch.nn.LayerNorm(self.bin_state_dim + self.item_dim)
         self._device = next(self.net.parameters()).device
         # line 17-21为了应对过大KL
         last_layer = None
@@ -25,7 +27,7 @@ class CategoricalActor(Actor):
         
         if last_layer is not None:
             # 使用很小的 gain 初始化权重，Bias 设为 0
-            torch.nn.init.orthogonal_(last_layer.weight, gain=0.01)
+            torch.nn.init.uniform_(last_layer.weight, -0.001, 0.001)
             torch.nn.init.constant_(last_layer.bias, 0.0)
     
     def _distribution(self, obs: torch.Tensor) -> Categorical:
@@ -45,13 +47,14 @@ class CategoricalActor(Actor):
         item_expanded = item_features.unsqueeze(1).expand(-1, self.num_bins, -1) # (batch_size, num_bins, item_dim)
         features = torch.cat([bin_features, item_expanded], dim=2) # (batch_size, num_bins, bin_state_dim + item_dim)
         # batch_size * num_bins * input_dim -> batch_size x num_bins x 1
-        scores = self.net(features) # only use feature to compute logits
-        logits = scores.squeeze(-1) # (batch_size, num_bins)
-        HUGE_NEG = -1e8
-        masked_logits = logits + (mask <= 0.5)* HUGE_NEG
-        # in case all actions are masked, then use the original logits
-        all_masked = (mask <= 0.5).all(dim=-1, keepdim=True)
-        masked_logits = torch.where(all_masked, logits, masked_logits)
+        features = self.ln(features) # only use feature to compute logits
+        logits = self.net(features).squeeze(-1) # (batch_size, num_bins)
+        logits = 5.0 * torch.tanh(logits / 5.0)
+        bool_mask = (mask < 0.5)
+        all_masked = bool_mask.all(dim=-1, keepdim=True)
+        if all_masked.any():
+            bool_mask = torch.where(all_masked, torch.tensor(False, device=logits.device), bool_mask)
+        masked_logits = logits.masked_fill(bool_mask, -1e2)
         return Categorical(logits=masked_logits) # important, used to avoid being considered as probs
     
     def forward(self, obs: torch.Tensor)-> Distribution:

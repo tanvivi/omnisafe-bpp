@@ -65,7 +65,7 @@ defaults:
     # lambda for cost gae
     lam_c: 0.95
     # clip ratio
-    clip: 0.2
+    clip: 0.1
     # advantage estimation method, options: gae, retrace
     adv_estimation_method: gae
     # standardize reward advantage
@@ -110,7 +110,7 @@ defaults:
       activation: tanh
       # out_activation: tanh
       # learning rate
-      lr: 0.0003
+      lr: 0.00001
     critic:
       # hidden layer sizes
       hidden_sizes: [64, 64]
