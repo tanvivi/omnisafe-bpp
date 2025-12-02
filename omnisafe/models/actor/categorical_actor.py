@@ -4,11 +4,15 @@ from torch.distributions import Categorical, Distribution
 from omnisafe.utils.model import build_mlp_network
 
 class CategoricalActor(Actor):
-    def __init__(self, obs_space, act_space, hidden_sizes, activation = 'relu', weight_initialization_mode = 'kaiming_uniform'):
+    def __init__(self, obs_space, act_space, hidden_sizes, activation = 'relu', weight_initialization_mode = 'kaiming_uniform',
+                item_dim=3, bin_state_dim=4):
         super().__init__(obs_space, act_space, hidden_sizes, activation, weight_initialization_mode)
-        
+        self.num_bins = self._act_dim
+        self.item_dim = item_dim
+        self.bin_state_dim = bin_state_dim
+        input_dim = self.bin_state_dim + self.item_dim
         self.net: torch.nn.Module = build_mlp_network(
-            sizes=[self._obs_dim, *self._hidden_sizes, self._act_dim],
+            sizes=[input_dim, *self._hidden_sizes, 1],
             activation=activation,
             weight_initialization_mode=weight_initialization_mode,
         )
@@ -29,14 +33,25 @@ class CategoricalActor(Actor):
         Args: obs
         Return: the categorical distribution
         """
-        logits = self.net(obs)
-        mask = obs[..., :self._act_dim]
+        # print(obs.shape)
+        if obs.dim() == 1:
+            obs = obs.unsqueeze(0)
+        batch_size = obs.shape[0]
+        mask = obs[..., :self._act_dim] # extract mask
+        bin_part_end = self.num_bins + (self.num_bins * self.bin_state_dim)
+        bin_flat = obs[:, self.num_bins:bin_part_end] # extract bin states
+        item_features = obs[:, bin_part_end:] # extract item features
+        bin_features = bin_flat.view(batch_size, self.num_bins, self.bin_state_dim) # reshape to (batch_size, num_bins, bin_state_dim)
+        item_expanded = item_features.unsqueeze(1).expand(-1, self.num_bins, -1) # (batch_size, num_bins, item_dim)
+        features = torch.cat([bin_features, item_expanded], dim=2) # (batch_size, num_bins, bin_state_dim + item_dim)
+        # batch_size * num_bins * input_dim -> batch_size x num_bins x 1
+        scores = self.net(features) # only use feature to compute logits
+        logits = scores.squeeze(-1) # (batch_size, num_bins)
         HUGE_NEG = -1e8
-        masked_logits = torch.where(mask > 0.5, logits, torch.tensor(HUGE_NEG, device=logits.device, dtype=logits.dtype))
+        masked_logits = logits + (mask <= 0.5)* HUGE_NEG
+        # in case all actions are masked, then use the original logits
         all_masked = (mask <= 0.5).all(dim=-1, keepdim=True)
         masked_logits = torch.where(all_masked, logits, masked_logits)
-        if masked_logits.dim() == 2:
-            masked_logits = masked_logits.unsqueeze(1)
         return Categorical(logits=masked_logits) # important, used to avoid being considered as probs
     
     def forward(self, obs: torch.Tensor)-> Distribution:
