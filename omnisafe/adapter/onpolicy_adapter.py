@@ -122,9 +122,13 @@ class OnPolicyAdapter(OnlineAdapter):
                             _, last_value_r, last_value_c, _ = agent.step(
                                 info['final_observation'][idx],
                             )
-                        last_value_r = last_value_r.unsqueeze(0)
-                        last_value_c = last_value_c.unsqueeze(0)
-
+                        # print(f"DEBUG: Before unsqueeze - last_value_r shape: {last_value_r.shape}")
+                        # print(f"DEBUG: Before unsqueeze - last_value_c shape: {last_value_c.shape}")
+                        
+                        last_value_r = last_value_r.reshape(-1)
+                        last_value_c = last_value_c.reshape(-1)
+                        # print(f"DEBUG: after unsqueeze - last_value_r shape: {last_value_r.shape}")
+                        # print(f"DEBUG: after unsqueeze - last_value_c shape: {last_value_c.shape}")
                     if done or time_out:
                         self._log_metrics(logger, idx)
                         self._reset_log(idx)

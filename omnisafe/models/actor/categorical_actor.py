@@ -49,7 +49,7 @@ class CategoricalActor(Actor):
         # batch_size * num_bins * input_dim -> batch_size x num_bins x 1
         features = self.ln(features) # only use feature to compute logits
         logits = self.net(features).squeeze(-1) # (batch_size, num_bins)
-        logits = 5.0 * torch.tanh(logits / 5.0)
+        # logits = 5.0 * torch.tanh(logits / 5.0)
         bool_mask = (mask < 0.5)
         all_masked = bool_mask.all(dim=-1, keepdim=True)
         if all_masked.any():

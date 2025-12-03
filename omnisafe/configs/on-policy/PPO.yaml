@@ -31,15 +31,15 @@ defaults:
   # algorithm configurations
   algo_cfgs:
     # number of steps to update the policy
-    steps_per_epoch: 20000
+    steps_per_epoch: 2048
     # number of iterations to update the policy
-    update_iters: 40
+    update_iters: 20
     # batch size for each iteration
-    batch_size: 64
+    batch_size: 128
     # target kl divergence
     target_kl: 0.02
     # entropy coefficient
-    entropy_coef: 0.0
+    entropy_coef: 0.01
     # normalize reward
     reward_normalize: False
     # normalize cost
@@ -113,7 +113,7 @@ defaults:
       lr: 0.00001
     critic:
       # hidden layer sizes
-      hidden_sizes: [64, 64]
+      hidden_sizes: [128, 128]
       # activation function
       activation: tanh
       # learning rate

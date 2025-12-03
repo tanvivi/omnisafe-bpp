@@ -135,7 +135,10 @@ class ActorCritic(nn.Module):
             value_r = self.reward_critic(obs)
             act = self.actor.predict(obs, deterministic=deterministic)
             log_prob = self.actor.log_prob(act)
-        return act, value_r[0], log_prob
+            val = value_r[0]
+            if val.dim() > 1:
+                val = val.view(-1)
+        return act, val, log_prob
 
     def forward(
         self,
