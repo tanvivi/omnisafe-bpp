@@ -19,6 +19,7 @@ from __future__ import annotations
 from omnisafe.models.base import Critic
 from omnisafe.models.critic.q_critic import QCritic
 from omnisafe.models.critic.v_critic import VCritic
+from omnisafe.models.critic.bs_critic import BSCritic
 from omnisafe.typing import Activation, CriticType, InitFunction, OmnisafeSpace
 
 
@@ -55,6 +56,7 @@ class CriticBuilder:
         weight_initialization_mode: InitFunction = 'kaiming_uniform',
         num_critics: int = 1,
         use_obs_encoder: bool = False,
+        **kwargs, # for additional parameters
     ) -> None:
         """Initialize an instance of :class:`CriticBuilder`."""
         self._obs_space: OmnisafeSpace = obs_space
@@ -64,6 +66,7 @@ class CriticBuilder:
         self._hidden_sizes: list[int] = hidden_sizes
         self._num_critics: int = num_critics
         self._use_obs_encoder: bool = use_obs_encoder
+        self._kwargs = kwargs
 
     def build_critic(
         self,
@@ -101,6 +104,18 @@ class CriticBuilder:
                 activation=self._activation,
                 weight_initialization_mode=self._weight_initialization_mode,
                 num_critics=self._num_critics,
+            )
+        if critic_type == 'bs-v': # add new critic type for bin selection
+            return BSCritic(
+                obs_space=self._obs_space,
+                act_space=self._act_space,
+                hidden_sizes=self._hidden_sizes,
+                activation=self._activation,
+                weight_initialization_mode=self._weight_initialization_mode,
+                num_critics=self._num_critics,
+                item_dim=self._kwargs.get('item_dim', 3),
+                bin_state_dim=self._kwargs.get('bin_state_dim', 4),
+                num_bins=self._act_space.n
             )
 
         raise NotImplementedError(

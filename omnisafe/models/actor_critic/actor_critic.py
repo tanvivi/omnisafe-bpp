@@ -84,7 +84,9 @@ class ActorCritic(nn.Module):
             weight_initialization_mode=model_cfgs.weight_initialization_mode,
             num_critics=1,
             use_obs_encoder=False,
-        ).build_critic(critic_type='v')
+            item_dim=3,
+            bin_state_dim=4
+        ).build_critic(critic_type='bs-v') #critic for bin selection
         self.add_module('actor', self.actor)
         self.add_module('reward_critic', self.reward_critic)
 

@@ -117,7 +117,7 @@ defaults:
       # activation function
       activation: tanh
       # learning rate
-      lr: 0.0003
+      lr: 0.00005
 
 ShadowHandCatchOver2UnderarmSafeFinger:
   # training configurations
