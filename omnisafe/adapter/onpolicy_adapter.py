@@ -76,6 +76,7 @@ class OnPolicyAdapter(OnlineAdapter):
             logger (Logger): Logger, to log ``EpRet``, ``EpCost``, ``EpLen``.
         """
         self._reset_log()
+        epoch_reasons = {}
 
         obs, _ = self.reset()
         for step in track(
@@ -130,14 +131,52 @@ class OnPolicyAdapter(OnlineAdapter):
                         # print(f"DEBUG: after unsqueeze - last_value_r shape: {last_value_r.shape}")
                         # print(f"DEBUG: after unsqueeze - last_value_c shape: {last_value_c.shape}")
                     if done or time_out:
+                        if 'reason' in info:
+                            reasons_list = info['reason']
+                            if isinstance(reasons_list, (list, tuple)):
+                                specific_reason = reasons_list[idx]
+                            else:
+                                specific_reason = reasons_list
+                        elif 'final_info' in info:
+                            final_infos = info['final_info']
+                            current_final_info = None
+                            import numpy as np
+                            if isinstance(final_infos, (list, tuple, np.ndarray)):
+                                if idx < len(final_infos):
+                                    current_final_info = final_infos[idx]
+                            
+                            elif isinstance(final_infos, dict):
+                                current_final_info = final_infos
+                            
+                            else:
+                                print(f"DEBUG: Unknown final_info type: {type(final_infos)}")
+
+                            if current_final_info is not None and isinstance(current_final_info, dict):
+                                if 'reason' in current_final_info:
+                                    specific_reason = current_final_info['reason']
+                                
+                        if specific_reason is not None:
+                            if specific_reason not in epoch_reasons:
+                                epoch_reasons[specific_reason] = 0
+                            epoch_reasons[specific_reason] += 1
                         self._log_metrics(logger, idx)
                         self._reset_log(idx)
 
                         self._ep_ret[idx] = 0.0
                         self._ep_cost[idx] = 0.0
                         self._ep_len[idx] = 0.0
+                        
 
                     buffer.finish_path(last_value_r, last_value_c, idx)
+        print(f"\n--- Epoch Failure Analysis (Epoch {logger.current_epoch}) ---")
+        total_episodes = sum(epoch_reasons.values())
+        if total_episodes > 0:
+            for reason, count in epoch_reasons.items():
+                ratio = (count / total_episodes) * 100
+                print(f"  {reason}: {count} times ({ratio:.1f}%)")
+        else:
+            print("  No episodes finished this epoch.")
+        print(f"--------------------------------------------\n")  
 
     def _log_value(
         self,

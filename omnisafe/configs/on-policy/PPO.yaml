@@ -110,14 +110,14 @@ defaults:
       activation: tanh
       # out_activation: tanh
       # learning rate
-      lr: 0.00001
+      lr: 0.0001
     critic:
       # hidden layer sizes
       hidden_sizes: [128, 128]
       # activation function
       activation: tanh
       # learning rate
-      lr: 0.00005
+      lr: 0.00003
 
 ShadowHandCatchOver2UnderarmSafeFinger:
   # training configurations
