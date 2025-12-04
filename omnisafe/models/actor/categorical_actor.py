@@ -5,7 +5,7 @@ from omnisafe.utils.model import build_mlp_network
 
 class CategoricalActor(Actor):
     def __init__(self, obs_space, act_space, hidden_sizes, activation = 'relu', weight_initialization_mode = 'kaiming_uniform',
-                item_dim=3, bin_state_dim=4):
+                item_dim=3, bin_state_dim=5):
         super().__init__(obs_space, act_space, hidden_sizes, activation, weight_initialization_mode)
         self.num_bins = self._act_dim
         self.item_dim = item_dim
@@ -36,10 +36,15 @@ class CategoricalActor(Actor):
         Return: the categorical distribution
         """
         # print(obs.shape)
+        self._device = self.ln.weight.device
+        # print(f"DEBUG: obs device: {obs.device}, model device: {self._device}")
+        if obs.device != self._device:
+            obs = obs.to(self._device)
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
         batch_size = obs.shape[0]
         mask = obs[..., :self._act_dim] # extract mask
+        # print(f"DEBUG: obs: {obs}, mask : {mask}")
         bin_part_end = self.num_bins + (self.num_bins * self.bin_state_dim)
         bin_flat = obs[:, self.num_bins:bin_part_end] # extract bin states
         item_features = obs[:, bin_part_end:] # extract item features

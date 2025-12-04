@@ -425,6 +425,11 @@ class PolicyGradient(BaseAlgo):
             obs (torch.Tensor): The ``observation`` sampled from buffer.
             target_value_r (torch.Tensor): The ``target_value_r`` sampled from buffer.
         """
+        device = next(self._actor_critic.reward_critic.parameters()).device
+        if obs.device != device:
+            obs = obs.to(device)
+        if target_value_r.device != device:
+            target_value_r = target_value_r.to(device)
         self._actor_critic.reward_critic_optimizer.zero_grad()
         loss = nn.functional.mse_loss(self._actor_critic.reward_critic(obs)[0], target_value_r)
 
@@ -465,6 +470,11 @@ class PolicyGradient(BaseAlgo):
             obs (torch.Tensor): The ``observation`` sampled from buffer.
             target_value_c (torch.Tensor): The ``target_value_c`` sampled from buffer.
         """
+        device = next(self._actor_critic.reward_critic.parameters()).device
+        if obs.device != device:
+            obs = obs.to(device)
+        if target_value_c.device != device:
+            target_value_c = target_value_c.to(device)
         self._actor_critic.cost_critic_optimizer.zero_grad()
         loss = nn.functional.mse_loss(self._actor_critic.cost_critic(obs)[0], target_value_c)
 
@@ -511,6 +521,12 @@ class PolicyGradient(BaseAlgo):
             adv_r (torch.Tensor): The ``reward_advantage`` sampled from buffer.
             adv_c (torch.Tensor): The ``cost_advantage`` sampled from buffer.
         """
+        device = next(self._actor_critic.actor.parameters()).device
+        if obs.device != device: obs = obs.to(device)
+        if act.device != device: act = act.to(device)
+        if logp.device != device: logp = logp.to(device)
+        if adv_r.device != device: adv_r = adv_r.to(device)
+        if adv_c.device != device: adv_c = adv_c.to(device)
         adv = self._compute_adv_surrogate(adv_r, adv_c)
         loss = self._loss_pi(obs, act, logp, adv)
         self._actor_critic.actor_optimizer.zero_grad()

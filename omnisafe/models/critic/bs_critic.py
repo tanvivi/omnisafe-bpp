@@ -16,7 +16,7 @@ class BinNetwork(nn.Module):
                 activation: Activation = 'relu',
                 weight_initialization_mode: InitFunction = 'kaiming_uniform',
                 num_bins: int = 2,
-                bin_state_dim: int = 4,
+                bin_state_dim: int = 5,
                 item_dim: int = 3):
         print(f"DEBUG: Initializing BinNetwork with bins={num_bins}")
         super().__init__()
@@ -36,6 +36,9 @@ class BinNetwork(nn.Module):
         nn.init.constant_(self.value_head.bias, 0.0)
     
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        device = self.ln.weight.device
+        if obs.device != device:
+            obs = obs.to(device)
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
         batch_size = obs.shape[0]
@@ -68,7 +71,7 @@ class BSCritic(Critic):
         weight_initialization_mode: InitFunction = 'kaiming_uniform',
         num_critics: int = 1,
         item_dim: int = 3,
-        bin_state_dim: int = 4,
+        bin_state_dim: int = 5,
         num_bins: int = 2
     ) -> None:
         super().__init__(
@@ -83,8 +86,9 @@ class BSCritic(Critic):
         self.item_dim = item_dim
         self.bin_state_dim = bin_state_dim
         self.num_bins = act_space.n if num_bins is None else num_bins
-        self.net_lst: list[nn.Module]
-        self.net_lst = []
+        # self.net_lst: list[nn.Module]
+        # self.net_lst = []
+        self.net_list = nn.ModuleList()
 
         for idx in range(self._num_critics):
             net = BinNetwork(
@@ -97,7 +101,7 @@ class BSCritic(Critic):
                 item_dim=self.item_dim
             )
             
-            self.net_lst.append(net)
+            self.net_list.append(net)
             self.add_module(f'critic_{idx}', net)
     
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -110,7 +114,7 @@ class BSCritic(Critic):
             list of V critic values (1 for PPO)
         """
         res = []
-        for critic in self.net_lst:
+        for critic in self.net_list:
             # res.append(torch.squeeze(critic(obs), -1))
             res.append(critic(obs).view(-1))
         return res

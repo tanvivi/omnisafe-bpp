@@ -73,6 +73,17 @@ class ConstraintActorCritic(ActorCritic):
             use_obs_encoder=False,
         ).build_critic('v')
         self.add_module('cost_critic', self.cost_critic)
+        self.reward_critic: Critic = CriticBuilder(
+            obs_space=obs_space,
+            act_space=act_space,
+            hidden_sizes=model_cfgs.critic.hidden_sizes,
+            activation=model_cfgs.critic.activation,
+            weight_initialization_mode=model_cfgs.weight_initialization_mode,
+            num_critics=1,
+            use_obs_encoder=False,
+            item_dim=3,
+            bin_state_dim=5
+        ).build_critic(critic_type='bs-v') #critic for bin selection
 
         if model_cfgs.critic.lr is not None:
             self.cost_critic_optimizer: optim.Optimizer
@@ -100,6 +111,9 @@ class ConstraintActorCritic(ActorCritic):
             log_prob: The log probability of the action.
         """
         with torch.no_grad():
+            device = next(self.actor.parameters()).device
+            if obs.device != device:
+                obs = obs.to(device)  # 必须赋值给 obs！
             value_r = self.reward_critic(obs)
             value_c = self.cost_critic(obs)
 

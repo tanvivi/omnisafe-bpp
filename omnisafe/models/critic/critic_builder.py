@@ -114,7 +114,7 @@ class CriticBuilder:
                 weight_initialization_mode=self._weight_initialization_mode,
                 num_critics=self._num_critics,
                 item_dim=self._kwargs.get('item_dim', 3),
-                bin_state_dim=self._kwargs.get('bin_state_dim', 4),
+                bin_state_dim=self._kwargs.get('bin_state_dim', 5),
                 num_bins=self._act_space.n
             )
 
