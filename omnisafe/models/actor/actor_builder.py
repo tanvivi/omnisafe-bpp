@@ -46,6 +46,7 @@ class ActorBuilder:
         hidden_sizes: list[int],
         activation: Activation = 'relu',
         weight_initialization_mode: InitFunction = 'kaiming_uniform',
+        **kwargs, # for additional parameters
     ) -> None:
         """Initialize an instance of :class:`ActorBuilder`."""
         self._obs_space: OmnisafeSpace = obs_space
@@ -53,6 +54,7 @@ class ActorBuilder:
         self._weight_initialization_mode: InitFunction = weight_initialization_mode
         self._activation: Activation = activation
         self._hidden_sizes: list[int] = hidden_sizes
+        self._kwargs = kwargs
 
     # pylint: disable-next=too-many-return-statements
     def build_actor(
@@ -76,12 +78,14 @@ class ActorBuilder:
             NotImplementedError: If the actor type is not implemented.
         """
         if actor_type == 'categorical':
+            print(f"debug:actor {(self._kwargs.get('bin_state_dim', 5))}")
             return CategoricalActor(
                 self._obs_space,
                 self._act_space,
                 self._hidden_sizes,
                 activation=self._activation,
                 weight_initialization_mode=self._weight_initialization_mode,
+                bin_state_dim=self._kwargs.get('bin_state_dim', 5),
             )
         if actor_type == 'gaussian_learning':
             return GaussianLearningActor(

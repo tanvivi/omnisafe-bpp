@@ -66,13 +66,15 @@ class ActorCritic(nn.Module):
     ) -> None:
         """Initialize an instance of :class:`ActorCritic`."""
         super().__init__()
-
+        bin_state_dim = model_cfgs.bin_state_dim
+        
         self.actor: Actor = ActorBuilder(
             obs_space=obs_space,
             act_space=act_space,
             hidden_sizes=model_cfgs.actor.hidden_sizes,
             activation=model_cfgs.actor.activation,
             weight_initialization_mode=model_cfgs.weight_initialization_mode,
+            bin_state_dim=bin_state_dim,
         ).build_actor(
             actor_type=model_cfgs.actor_type,
         )
@@ -85,7 +87,10 @@ class ActorCritic(nn.Module):
             num_critics=1,
             use_obs_encoder=False,
             item_dim=3,
-            bin_state_dim=5
+            # The `bin_state_dim` parameter in the `ActorCritic` class is used in the initialization
+            # of the critic network. It specifies the dimension of the state representation for the
+            # critic that is specifically used for bin selection.
+            bin_state_dim=bin_state_dim
         ).build_critic(critic_type='bs-v') #critic for bin selection
         self.add_module('actor', self.actor)
         self.add_module('reward_critic', self.reward_critic)

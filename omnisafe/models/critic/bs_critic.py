@@ -18,7 +18,7 @@ class BinNetwork(nn.Module):
                 num_bins: int = 2,
                 bin_state_dim: int = 5,
                 item_dim: int = 3):
-        print(f"DEBUG: Initializing BinNetwork with bins={num_bins}")
+        print(f"DEBUG: Initializing BinNetwork with bins={num_bins}, bin_state_dim={bin_state_dim}, item_dim={item_dim}")
         super().__init__()
         self.num_bins = num_bins
         self.bin_state_dim = bin_state_dim

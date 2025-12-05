@@ -9,6 +9,7 @@ class CategoricalActor(Actor):
         super().__init__(obs_space, act_space, hidden_sizes, activation, weight_initialization_mode)
         self.num_bins = self._act_dim
         self.item_dim = item_dim
+        print(f"DEBUG: CategoricalActor bin_state_dim: {bin_state_dim}")
         self.bin_state_dim = bin_state_dim
         input_dim = self.bin_state_dim + self.item_dim
         self.logits_scale = 0.2

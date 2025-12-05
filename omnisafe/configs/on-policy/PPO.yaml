@@ -92,6 +92,8 @@ defaults:
     window_lens: 100
   # model configurations
   model_cfgs:
+    # bin_state_dim
+    bin_state_dim: 8
     # weight initialization mode
     weight_initialization_mode: "kaiming_uniform"
     # actor type, options: gaussian, gaussian_learning
