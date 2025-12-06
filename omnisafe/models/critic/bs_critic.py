@@ -8,6 +8,7 @@ import torch.nn as nn
 from omnisafe.models.base import Critic
 from omnisafe.typing import Activation, InitFunction, OmnisafeSpace
 from omnisafe.utils.model import build_mlp_network
+from omnisafe.models.actor.categorical_actor import BinItemMatcher
 
 class BinNetwork(nn.Module):
     def __init__(self, 
@@ -24,19 +25,17 @@ class BinNetwork(nn.Module):
         self.bin_state_dim = bin_state_dim
         self.item_dim = item_dim
         input_dim = self.bin_state_dim + self.item_dim
+        self.matcher = BinItemMatcher(bin_state_dim, item_dim, hidden_sizes, activation)
         
-        self.ln = nn.LayerNorm(input_dim)
-        self.encoder = build_mlp_network(
-            sizes=[input_dim, *hidden_sizes],
-            activation=activation,
-            weight_initialization_mode=weight_initialization_mode,
-        )
+        self.ln_bin = nn.LayerNorm(bin_state_dim)
+        self.ln_item = nn.LayerNorm(item_dim)
+        
         self.value_head = nn.Linear(hidden_sizes[-1], 1)
         nn.init.orthogonal_(self.value_head.weight, gain=1.0) 
         nn.init.constant_(self.value_head.bias, 0.0)
     
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        device = self.ln.weight.device
+        device = self.value_head.weight.device
         if obs.device != device:
             obs = obs.to(device)
         if obs.dim() == 1:
@@ -48,12 +47,11 @@ class BinNetwork(nn.Module):
         item_features = obs[:, bin_part_end:] # extract item features
         
         bin_features = bin_flat.view(batch_size, self.num_bins, self.bin_state_dim) # reshape to (batch_size, num_bins, bin_state_dim)
-        item_expanded = item_features.unsqueeze(1).expand(-1, self.num_bins, -1) # (batch_size, num_bins, item_dim)
         
-        features = torch.cat([bin_features, item_expanded], dim=2) # (batch_size, num_bins, bin_state_dim + item_dim)
-        features = self.ln(features)
-        
-        bin_embeddings = self.encoder(features)
+        bin_features = self.ln_bin(bin_features)
+        item_features = self.ln_item(item_features)     
+
+        bin_embeddings = self.matcher(bin_features, item_features) # (B, N, H)
         
         global_values, _ = torch.max(bin_embeddings, dim=1)
         

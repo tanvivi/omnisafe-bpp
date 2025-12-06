@@ -1,7 +1,71 @@
 from omnisafe.models.base import Actor
 import torch
+import torch.nn as nn
+import numpy as np
 from torch.distributions import Categorical, Distribution
 from omnisafe.utils.model import build_mlp_network
+
+class BinItemMatcher(nn.Module):
+    def __init__(self, bin_dim, item_dim, hidden_sizes, activation='relu'):
+        super().__init__()
+        
+        # 我们取 hidden_sizes 的第一层作为 Embedding 维度
+        embed_dim = hidden_sizes[0] 
+        
+        # 1. 箱子特征编码器 (Bin Tower)
+        # Input: bin_dim -> Output: embed_dim
+        self.bin_encoder = nn.Sequential(
+            nn.Linear(bin_dim, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU()
+        )
+        
+        # 2. 物品特征编码器 (Item Tower)
+        # Input: item_dim -> Output: embed_dim
+        self.item_encoder = nn.Sequential(
+            nn.Linear(item_dim, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU()
+        )
+        
+        # 3. 融合后的处理层 (Interaction MLP)
+        # Input: embed_dim * 2 (拼接后) -> Output: embed_dim
+        # 这一层负责学习 "匹配关系"
+        self.interact_net = build_mlp_network(
+            sizes=[embed_dim * 2, *hidden_sizes], 
+            activation=activation
+        )
+        
+        # 初始化
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                torch.nn.init.constant_(m.bias, 0.0)
+
+    def forward(self, bin_feats, item_feat):
+        """
+        bin_feats: (Batch, Num_Bins, Bin_Dim)
+        item_feat: (Batch, Item_Dim) 
+        """
+        batch_size, num_bins, _ = bin_feats.shape
+        
+        # --- A. 分别编码 ---
+        bin_emb = self.bin_encoder(bin_feats) # (Batch, N, Hidden)
+        
+        # Item 需要扩充维度以匹配箱子数量
+        # (Batch, Hidden) -> (Batch, 1, Hidden) -> (Batch, N, Hidden)
+        item_emb = self.item_encoder(item_feat).unsqueeze(1).expand(-1, num_bins, -1)
+        
+        # --- B. 特征融合 (Concatenate) ---
+        # 将两者拼在一起，让后面的 MLP 去计算它们的非线性关系
+        combined = torch.cat([bin_emb, item_emb], dim=-1) # (Batch, N, 2*Hidden)
+        
+        # --- C. 深度交互 ---
+        features = self.interact_net(combined) # (Batch, N, Hidden)
+        
+        return features
 
 class CategoricalActor(Actor):
     def __init__(self, obs_space, act_space, hidden_sizes, activation = 'relu', weight_initialization_mode = 'kaiming_uniform',
@@ -11,25 +75,13 @@ class CategoricalActor(Actor):
         self.item_dim = item_dim
         print(f"DEBUG: CategoricalActor bin_state_dim: {bin_state_dim}")
         self.bin_state_dim = bin_state_dim
-        input_dim = self.bin_state_dim + self.item_dim
-        self.logits_scale = 0.2
-        self.net: torch.nn.Module = build_mlp_network(
-            sizes=[input_dim, *self._hidden_sizes, 1],
-            activation=activation,
-            weight_initialization_mode=weight_initialization_mode,
-        )
-        self.ln = torch.nn.LayerNorm(self.bin_state_dim + self.item_dim)
-        self._device = next(self.net.parameters()).device
-        # line 17-21为了应对过大KL
-        last_layer = None
-        for m in self.net.modules():
-            if isinstance(m, torch.nn.Linear):
-                last_layer = m
+        self.matcher = BinItemMatcher(bin_state_dim, item_dim, hidden_sizes, activation)
+        self.head = nn.Linear(hidden_sizes[-1], 1)
+        torch.nn.init.uniform_(self.head.weight, -0.001, 0.001)
+        torch.nn.init.constant_(self.head.bias, 0.0)
         
-        if last_layer is not None:
-            # 使用很小的 gain 初始化权重，Bias 设为 0
-            torch.nn.init.uniform_(last_layer.weight, -0.001, 0.001)
-            torch.nn.init.constant_(last_layer.bias, 0.0)
+        self.ln_bin = torch.nn.LayerNorm(bin_state_dim)
+        self.ln_item = torch.nn.LayerNorm(item_dim)
     
     def _distribution(self, obs: torch.Tensor) -> Categorical:
         """
@@ -37,7 +89,7 @@ class CategoricalActor(Actor):
         Return: the categorical distribution
         """
         # print(obs.shape)
-        self._device = self.ln.weight.device
+        self._device = self.head.weight.device
         # print(f"DEBUG: obs device: {obs.device}, model device: {self._device}")
         if obs.device != self._device:
             obs = obs.to(self._device)
@@ -49,12 +101,14 @@ class CategoricalActor(Actor):
         bin_part_end = self.num_bins + (self.num_bins * self.bin_state_dim)
         bin_flat = obs[:, self.num_bins:bin_part_end] # extract bin states
         item_features = obs[:, bin_part_end:] # extract item features
-        bin_features = bin_flat.view(batch_size, self.num_bins, self.bin_state_dim) # reshape to (batch_size, num_bins, bin_state_dim)
-        item_expanded = item_features.unsqueeze(1).expand(-1, self.num_bins, -1) # (batch_size, num_bins, item_dim)
-        features = torch.cat([bin_features, item_expanded], dim=2) # (batch_size, num_bins, bin_state_dim + item_dim)
-        # batch_size * num_bins * input_dim -> batch_size x num_bins x 1
-        features = self.ln(features) # only use feature to compute logits
-        logits = self.net(features).squeeze(-1) # (batch_size, num_bins)
+        
+        bin_features = bin_flat.view(batch_size, self.num_bins, self.bin_state_dim)
+        
+        bin_features = self.ln_bin(bin_features)
+        item_features = self.ln_item(item_features)
+        
+        features = self.matcher(bin_features, item_features) # (B, N, H)
+        logits = self.head(features).squeeze(-1) # (B, N)
         # logits = 5.0 * torch.tanh(logits / 5.0)
         bool_mask = (mask < 0.5)
         all_masked = bool_mask.all(dim=-1, keepdim=True)
