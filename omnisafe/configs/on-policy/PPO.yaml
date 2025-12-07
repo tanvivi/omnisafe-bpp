@@ -39,7 +39,7 @@ defaults:
     # target kl divergence
     target_kl: 0.02
     # entropy coefficient
-    entropy_coef: 0.01
+    entropy_coef: 0.05
     # normalize reward
     reward_normalize: False
     # normalize cost
@@ -65,7 +65,7 @@ defaults:
     # lambda for cost gae
     lam_c: 0.95
     # clip ratio
-    clip: 0.1
+    clip: 0.2
     # advantage estimation method, options: gae, retrace
     adv_estimation_method: gae
     # standardize reward advantage

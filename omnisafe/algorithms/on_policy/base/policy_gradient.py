@@ -538,6 +538,32 @@ class PolicyGradient(BaseAlgo):
             )
         distributed.avg_grads(self._actor_critic.actor)
         self._actor_critic.actor_optimizer.step()
+        # DEBUG12.7
+        if hasattr(self, '_diagnose_counter'):
+            self._diagnose_counter += 1
+        else:
+            self._diagnose_counter = 0
+        
+        if self._diagnose_counter % 500 == 0:  # 每500次更新
+            self._diagnose_training(obs, act, adv_r)
+
+    def _diagnose_training(self, obs, act, adv_r):
+        """添加此方法到PolicyGradient类"""
+        with torch.no_grad():
+            dist = self._actor_critic.actor(obs)
+            logits = dist.logits if hasattr(dist, 'logits') else None
+            
+            if logits is not None:
+                print(f"\n=== 诊断 (Step {self._diagnose_counter}) ===")
+                print(f"Logits std: {logits.std():.4f}")
+                print(f"Entropy: {dist.entropy().mean():.4f}")
+                
+                # 检查value
+                values = self._actor_critic.reward_critic(obs)[0]
+                print(f"Raw values: {values.detach()}")
+                print(f"Value range: [{values.min():.3f}, {values.max():.3f}]")
+                print(f"Value std: {values.std():.4f}")
+                print(f"Adv std: {adv_r.std():.4f}")
 
     def _compute_adv_surrogate(  # pylint: disable=unused-argument
         self,

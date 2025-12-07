@@ -77,11 +77,11 @@ class CategoricalActor(Actor):
         self.bin_state_dim = bin_state_dim
         self.matcher = BinItemMatcher(bin_state_dim, item_dim, hidden_sizes, activation)
         self.head = nn.Linear(hidden_sizes[-1], 1)
-        torch.nn.init.uniform_(self.head.weight, -0.001, 0.001)
+        torch.nn.init.orthogonal_(self.head.weight, gain=0.01)
         torch.nn.init.constant_(self.head.bias, 0.0)
         
-        self.ln_bin = torch.nn.LayerNorm(bin_state_dim)
-        self.ln_item = torch.nn.LayerNorm(item_dim)
+        self.ln_bin = nn.Identity()
+        self.ln_item = nn.Identity()
     
     def _distribution(self, obs: torch.Tensor) -> Categorical:
         """

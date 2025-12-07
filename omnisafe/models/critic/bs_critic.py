@@ -27,11 +27,11 @@ class BinNetwork(nn.Module):
         input_dim = self.bin_state_dim + self.item_dim
         self.matcher = BinItemMatcher(bin_state_dim, item_dim, hidden_sizes, activation)
         
-        self.ln_bin = nn.LayerNorm(bin_state_dim)
-        self.ln_item = nn.LayerNorm(item_dim)
+        self.ln_bin = nn.Identity()
+        self.ln_item = nn.Identity()
         
         self.value_head = nn.Linear(hidden_sizes[-1], 1)
-        nn.init.orthogonal_(self.value_head.weight, gain=1.0) 
+        nn.init.orthogonal_(self.value_head.weight, gain=0.1) 
         nn.init.constant_(self.value_head.bias, 0.0)
     
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
