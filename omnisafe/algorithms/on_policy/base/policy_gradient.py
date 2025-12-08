@@ -251,6 +251,13 @@ class PolicyGradient(BaseAlgo):
         """
         start_time = time.time()
         self._logger.log('INFO: Start training')
+        
+        self._logger.log('INFO: running sanity check')
+        sanity_passed = self._sanity_check()
+        if not sanity_passed:
+            self._logger.log('ERROR: Sanity check failed, aborting training.')
+            return 0.0, 0.0, 0.0
+        self._logger.log('INFO: Sanity check passed, proceeding with training.')
 
         for epoch in range(self._cfgs.train_cfgs.epochs):
             epoch_time = time.time()
@@ -352,6 +359,9 @@ class PolicyGradient(BaseAlgo):
             data['adv_r'],
             data['adv_c'],
         )
+        rewards = data['reward'] if 'reward' in data else None
+        if rewards is not None:
+            print(f"Reward分布: mean={rewards.mean():.4f}, std={rewards.std():.4f}, nonzero={(rewards!=0).sum()}/{rewards.numel()}")
 
         original_obs = obs
         old_distribution = self._actor_critic.actor(obs)
@@ -438,7 +448,7 @@ class PolicyGradient(BaseAlgo):
                 loss += param.pow(2).sum() * self._cfgs.algo_cfgs.critic_norm_coef
 
         loss.backward()
-
+        print(f"Critic loss: {loss.item():.4f}, target_value range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
         if self._cfgs.algo_cfgs.use_max_grad_norm:
             clip_grad_norm_(
                 self._actor_critic.reward_critic.parameters(),
@@ -564,6 +574,78 @@ class PolicyGradient(BaseAlgo):
                 print(f"Value range: [{values.min():.3f}, {values.max():.3f}]")
                 print(f"Value std: {values.std():.4f}")
                 print(f"Adv std: {adv_r.std():.4f}")
+                print(f"Adv_r: mean={adv_r.mean():.3f}, std={adv_r.std():.3f}, min={adv_r.min():.3f}, max={adv_r.max():.3f}")
+
+    def _sanity_check(self) -> bool:
+        """单样本过拟合测试"""
+        # 获取一个固定样本
+        device = next(self._actor_critic.actor.parameters()).device
+        obs, _ = self._env.reset()
+        obs_sample = obs[0]  # 取第一个env
+        print(f"obs shape: {obs_sample.shape}, obs sample: {obs_sample}")
+        obs_tensor = torch.tensor(obs_sample, dtype=torch.float32, device=device).unsqueeze(0)
+        action_tensor = torch.tensor([0], dtype=torch.long).to(device)
+        target_tensor = torch.tensor([15.0], dtype=torch.float32).to(device)
+        
+        print(f"\n=== Sanity Check ===")
+        print(f"Device: {device}, Obs shape: {obs_tensor.shape}")
+        print(f"Obs shape: {obs_tensor.shape}, target action: 0, target value: 15.0")
+        temp_optimizer = torch.optim.Adam(self._actor_critic.reward_critic.parameters(), lr=1e-3)
+    
+        # 测试Critic
+        print("\n[1] Testing Critic...")
+        for i in range(500):
+            temp_optimizer.zero_grad()
+            pred_value = self._actor_critic.reward_critic(obs_tensor)[0]
+            loss = nn.functional.mse_loss(pred_value, target_tensor)
+            loss.backward()
+            if i == 0:
+                total_norm = 0
+                for p in self._actor_critic.reward_critic.parameters():
+                    if p.grad is not None:
+                        total_norm += p.grad.data.norm(2).item() ** 2
+                total_norm = total_norm ** 0.5
+                print(f"  Initial gradient norm: {total_norm:.4f}")
+                if total_norm < 1e-6:
+                    print("  ❌ Gradient is too small, possible issue with backpropagation.")
+                    # return False
+            temp_optimizer.step()
+            # self._actor_critic.reward_critic_optimizer.zero_grad()
+            # pred_value = self._actor_critic.reward_critic(obs_tensor)[0]
+            # loss = nn.functional.mse_loss(pred_value, target_tensor)
+            # loss.backward()
+            # self._actor_critic.reward_critic_optimizer.step()
+            
+            if i % 100 == 0:
+                print(f"  Iter {i}: loss={loss.item():.4f}, pred={pred_value.item():.4f}")
+        
+        if loss.item() > 1.0:
+            print(f"❌ Critic FAILED: final loss={loss.item():.4f}")
+            return False
+        print(f"✓ Critic PASSED: final loss={loss.item():.4f}")
+        
+        # 测试Actor
+        print("\n[2] Testing Actor...")
+        for i in range(500):
+            self._actor_critic.actor_optimizer.zero_grad()
+            dist = self._actor_critic.actor(obs_tensor)
+            log_prob = dist.log_prob(action_tensor)
+            loss = -log_prob.mean()
+            loss.backward()
+            self._actor_critic.actor_optimizer.step()
+            
+            if i % 100 == 0:
+                probs = dist.probs[0].detach().cpu().numpy()
+                print(f"  Iter {i}: loss={loss.item():.4f}, probs={probs}")
+        
+        final_probs = dist.probs[0].detach().cpu().numpy()
+        if final_probs[0] < 0.8:
+            print(f"❌ Actor FAILED: action 0 prob={final_probs[0]:.3f}")
+            return False
+        print(f"✓ Actor PASSED: probs={final_probs}")
+        
+        print("===================\n")
+        return True
 
     def _compute_adv_surrogate(  # pylint: disable=unused-argument
         self,

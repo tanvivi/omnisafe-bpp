@@ -67,105 +67,181 @@ class BinItemMatcher(nn.Module):
         
         return features
 
+# class CategoricalActor(Actor):
+#     def __init__(self, obs_space, act_space, hidden_sizes, activation = 'relu', weight_initialization_mode = 'kaiming_uniform',
+#                 item_dim=3, bin_state_dim=5):
+#         super().__init__(obs_space, act_space, hidden_sizes, activation, weight_initialization_mode)
+#         self.num_bins = self._act_dim
+#         self.item_dim = item_dim
+#         print(f"DEBUG: CategoricalActor bin_state_dim: {bin_state_dim}")
+#         self.bin_state_dim = bin_state_dim
+#         self.matcher = BinItemMatcher(bin_state_dim, item_dim, hidden_sizes, activation)
+#         self.head = nn.Linear(hidden_sizes[-1], 1)
+#         torch.nn.init.orthogonal_(self.head.weight, gain=0.01)
+#         torch.nn.init.constant_(self.head.bias, 0.0)
+        
+#         self.ln_bin = nn.Identity()
+#         self.ln_item = nn.Identity()
+    
+#     def _distribution(self, obs: torch.Tensor) -> Categorical:
+#         """
+#         Args: obs
+#         Return: the categorical distribution
+#         """
+#         # print(obs.shape)
+#         self._device = self.head.weight.device
+#         # print(f"DEBUG: obs device: {obs.device}, model device: {self._device}")
+#         if obs.device != self._device:
+#             obs = obs.to(self._device)
+#         if obs.dim() == 1:
+#             obs = obs.unsqueeze(0)
+#         batch_size = obs.shape[0]
+#         mask = obs[..., :self._act_dim] # extract mask
+#         # print(f"DEBUG: obs: {obs}, mask : {mask}")
+#         bin_part_end = self.num_bins + (self.num_bins * self.bin_state_dim)
+#         bin_flat = obs[:, self.num_bins:bin_part_end] # extract bin states
+#         item_features = obs[:, bin_part_end:] # extract item features
+        
+#         bin_features = bin_flat.view(batch_size, self.num_bins, self.bin_state_dim)
+        
+#         bin_features = self.ln_bin(bin_features)
+#         item_features = self.ln_item(item_features)
+        
+#         features = self.matcher(bin_features, item_features) # (B, N, H)
+#         logits = self.head(features).squeeze(-1) # (B, N)
+#         # logits = 5.0 * torch.tanh(logits / 5.0)
+#         bool_mask = (mask < 0.5)
+#         all_masked = bool_mask.all(dim=-1, keepdim=True)
+#         if all_masked.any():
+#             bool_mask = torch.where(all_masked, torch.tensor(False, device=logits.device), bool_mask)
+#         masked_logits = logits.masked_fill(bool_mask, -1e2)
+#         return Categorical(logits=masked_logits) # important, used to avoid being considered as probs
+    
+#     def forward(self, obs: torch.Tensor)-> Distribution:
+#         """
+#         Args: obs (torch.Tensor): Observation from environments.
+#         Returns: The current distribution.
+#         """
+#         self._current_dist = self._distribution(obs)
+#         self._after_inference = True
+#         return self._current_dist
+
+#     def predict(self, obs, deterministic = False)-> torch.Tensor:
+#         """Predict the action given observation
+#         Args:
+#             obs (torch.Tensor): Observation from environments.
+#             deterministic (bool, optional): Whether to use deterministic policy. Defaults to False.
+
+#         Returns: The mean of the distribution if deterministic is True, otherwise the sampled action.
+#         """
+#         self._current_dist = self._distribution(obs)
+#         self._after_inference = True
+#         if deterministic:
+#             # return self._current_dist.probs.argmax(dim=-1)
+#             action = torch.argmax(self._current_dist.probs, dim=-1)
+#         else:
+#             action = self._current_dist.sample()
+#         return action.squeeze(-1) if action.dim() > 1 else action
+    
+#     def log_prob(self, act) ->torch.Tensor:
+#         """compute the log prob of action
+
+#         Args:
+#             act (_type_): _description_
+
+#         Returns:
+#             torch.Tensor: _description_
+#         """
+#         assert self._after_inference, 'log_prob() should be called after predict() or forward()'
+#         self._after_inference = False
+#         if act.dim() == 1:
+#             act = act.unsqueeze(1)
+#         return self._current_dist.log_prob(act.long())
+    
+#     # to satisfy the format of base
+#     @property
+#     def std(self) -> float:
+#         # pass
+#         return torch.zeros(1, device=self._device)
+    
+#     @std.setter
+#     def std(self, std) -> None:
+#         pass
+
 class CategoricalActor(Actor):
-    def __init__(self, obs_space, act_space, hidden_sizes, activation = 'relu', weight_initialization_mode = 'kaiming_uniform',
-                item_dim=3, bin_state_dim=5):
+    """简化版Actor - 直接MLP，与SimpleBSCritic匹配"""
+    def __init__(self, obs_space, act_space, hidden_sizes, 
+                 activation='relu', weight_initialization_mode='kaiming_uniform',
+                 **kwargs):  # 接受但忽略item_dim, bin_state_dim等
         super().__init__(obs_space, act_space, hidden_sizes, activation, weight_initialization_mode)
         self.num_bins = self._act_dim
-        self.item_dim = item_dim
-        print(f"DEBUG: CategoricalActor bin_state_dim: {bin_state_dim}")
-        self.bin_state_dim = bin_state_dim
-        self.matcher = BinItemMatcher(bin_state_dim, item_dim, hidden_sizes, activation)
-        self.head = nn.Linear(hidden_sizes[-1], 1)
-        torch.nn.init.orthogonal_(self.head.weight, gain=0.01)
-        torch.nn.init.constant_(self.head.bias, 0.0)
         
-        self.ln_bin = nn.Identity()
-        self.ln_item = nn.Identity()
+        # 直接处理完整obs
+        obs_dim = obs_space.shape[0]
+        
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden_sizes[0]),
+            nn.ReLU(),
+            nn.Linear(hidden_sizes[0], hidden_sizes[0]),
+            nn.ReLU(),
+            nn.Linear(hidden_sizes[0], self.num_bins)
+        )
+        
+        # Xavier初始化
+        for m in self.net.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0.0)
+        
+        # 最后一层小初始化
+        nn.init.orthogonal_(self.net[-1].weight, gain=0.01)
+        nn.init.constant_(self.net[-1].bias, 0.0)
     
     def _distribution(self, obs: torch.Tensor) -> Categorical:
-        """
-        Args: obs
-        Return: the categorical distribution
-        """
-        # print(obs.shape)
-        self._device = self.head.weight.device
-        # print(f"DEBUG: obs device: {obs.device}, model device: {self._device}")
-        if obs.device != self._device:
-            obs = obs.to(self._device)
+        device = next(self.parameters()).device
+        if obs.device != device:
+            obs = obs.to(device)
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
-        batch_size = obs.shape[0]
-        mask = obs[..., :self._act_dim] # extract mask
-        # print(f"DEBUG: obs: {obs}, mask : {mask}")
-        bin_part_end = self.num_bins + (self.num_bins * self.bin_state_dim)
-        bin_flat = obs[:, self.num_bins:bin_part_end] # extract bin states
-        item_features = obs[:, bin_part_end:] # extract item features
         
-        bin_features = bin_flat.view(batch_size, self.num_bins, self.bin_state_dim)
+        mask = obs[..., :self.num_bins]
         
-        bin_features = self.ln_bin(bin_features)
-        item_features = self.ln_item(item_features)
+        # 直接过MLP
+        logits = self.net(obs)
         
-        features = self.matcher(bin_features, item_features) # (B, N, H)
-        logits = self.head(features).squeeze(-1) # (B, N)
-        # logits = 5.0 * torch.tanh(logits / 5.0)
+        # Mask处理
         bool_mask = (mask < 0.5)
         all_masked = bool_mask.all(dim=-1, keepdim=True)
         if all_masked.any():
             bool_mask = torch.where(all_masked, torch.tensor(False, device=logits.device), bool_mask)
-        masked_logits = logits.masked_fill(bool_mask, -1e2)
-        return Categorical(logits=masked_logits) # important, used to avoid being considered as probs
+        
+        masked_logits = logits.masked_fill(bool_mask, -1e8)
+        return Categorical(logits=masked_logits)
     
-    def forward(self, obs: torch.Tensor)-> Distribution:
-        """
-        Args: obs (torch.Tensor): Observation from environments.
-        Returns: The current distribution.
-        """
+    def forward(self, obs):
         self._current_dist = self._distribution(obs)
         self._after_inference = True
         return self._current_dist
-
-    def predict(self, obs, deterministic = False)-> torch.Tensor:
-        """Predict the action given observation
-        Args:
-            obs (torch.Tensor): Observation from environments.
-            deterministic (bool, optional): Whether to use deterministic policy. Defaults to False.
-
-        Returns: The mean of the distribution if deterministic is True, otherwise the sampled action.
-        """
+    
+    def predict(self, obs, deterministic=False):
         self._current_dist = self._distribution(obs)
         self._after_inference = True
-        if deterministic:
-            # return self._current_dist.probs.argmax(dim=-1)
-            action = torch.argmax(self._current_dist.probs, dim=-1)
-        else:
-            action = self._current_dist.sample()
+        action = self._current_dist.probs.argmax(-1) if deterministic else self._current_dist.sample()
         return action.squeeze(-1) if action.dim() > 1 else action
     
-    def log_prob(self, act) ->torch.Tensor:
-        """compute the log prob of action
-
-        Args:
-            act (_type_): _description_
-
-        Returns:
-            torch.Tensor: _description_
-        """
-        assert self._after_inference, 'log_prob() should be called after predict() or forward()'
+    def log_prob(self, act):
+        assert self._after_inference
         self._after_inference = False
         if act.dim() == 1:
             act = act.unsqueeze(1)
         return self._current_dist.log_prob(act.long())
-    
-    # to satisfy the format of base
+
     @property
-    def std(self) -> float:
-        # pass
-        return torch.zeros(1, device=self._device)
+    def std(self):
+        return torch.zeros(1)
     
     @std.setter
-    def std(self, std) -> None:
+    def std(self, std):
         pass
     
     

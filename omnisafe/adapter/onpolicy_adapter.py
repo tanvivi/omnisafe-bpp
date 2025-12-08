@@ -77,7 +77,7 @@ class OnPolicyAdapter(OnlineAdapter):
         """
         self._reset_log()
         epoch_reasons = {}
-
+        total_rewards = []
         obs, _ = self.reset()
         for step in track(
             range(steps_per_epoch),
@@ -85,7 +85,7 @@ class OnPolicyAdapter(OnlineAdapter):
         ):
             act, value_r, value_c, logp = agent.step(obs)
             next_obs, reward, cost, terminated, truncated, info = self.step(act)
-
+            total_rewards.append(reward.cpu())
             self._log_value(reward=reward, cost=cost, info=info)
 
             if self._cfgs.algo_cfgs.use_cost:
@@ -168,6 +168,8 @@ class OnPolicyAdapter(OnlineAdapter):
                         
 
                     buffer.finish_path(last_value_r, last_value_c, idx)
+        all_rewards = torch.cat(total_rewards)
+        print(f"Rollout rewards: mean={all_rewards.mean():.4f}, std={all_rewards.std():.4f}, nonzero={(all_rewards!=0).sum()}/{all_rewards.numel()}")
         print(f"\n--- Epoch Failure Analysis (Epoch {logger.current_epoch}) ---")
         total_episodes = sum(epoch_reasons.values())
         if total_episodes > 0:
