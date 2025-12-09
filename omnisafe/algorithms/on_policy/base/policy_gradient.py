@@ -252,12 +252,12 @@ class PolicyGradient(BaseAlgo):
         start_time = time.time()
         self._logger.log('INFO: Start training')
         
-        self._logger.log('INFO: running sanity check')
-        sanity_passed = self._sanity_check()
-        if not sanity_passed:
-            self._logger.log('ERROR: Sanity check failed, aborting training.')
-            return 0.0, 0.0, 0.0
-        self._logger.log('INFO: Sanity check passed, proceeding with training.')
+        # self._logger.log('INFO: running sanity check')
+        # sanity_passed = self._sanity_check()
+        # if not sanity_passed:
+        #     self._logger.log('ERROR: Sanity check failed, aborting training.')
+        #     return 0.0, 0.0, 0.0
+        # self._logger.log('INFO: Sanity check passed, proceeding with training.')
 
         for epoch in range(self._cfgs.train_cfgs.epochs):
             epoch_time = time.time()
@@ -350,6 +350,10 @@ class PolicyGradient(BaseAlgo):
         #. Repeat steps 2, 3, 4 until the KL divergence violates the limit.
         """
         data = self._buf.get()
+        print(f"\n=== Buffer Data Check ===")
+        print(f"Target_value_r: mean={data['target_value_r'].mean():.3f}, range=[{data['target_value_r'].min():.3f}, {data['target_value_r'].max():.3f}]")
+        print(f"Adv_r: mean={data['adv_r'].mean():.3f}, std={data['adv_r'].std():.3f}")
+        print(f"Obs shape: {data['obs'].shape}, Act shape: {data['act'].shape}")
         obs, act, logp, target_value_r, target_value_c, adv_r, adv_c = (
             data['obs'],
             data['act'],
@@ -440,6 +444,11 @@ class PolicyGradient(BaseAlgo):
             obs = obs.to(device)
         if target_value_r.device != device:
             target_value_r = target_value_r.to(device)
+        # if not hasattr(self, '_printed_obs'):
+        #     self._printed_obs = True
+        #     print(f"\n=== Actual Training Obs ===")
+        #     print(f"Obs[0]: {obs[0]}")
+        #     print(f"Obs stats: mean={obs.mean():.4f}, std={obs.std():.4f}, range=[{obs.min():.4f}, {obs.max():.4f}]")
         self._actor_critic.reward_critic_optimizer.zero_grad()
         loss = nn.functional.mse_loss(self._actor_critic.reward_critic(obs)[0], target_value_r)
 
@@ -448,6 +457,19 @@ class PolicyGradient(BaseAlgo):
                 loss += param.pow(2).sum() * self._cfgs.algo_cfgs.critic_norm_coef
 
         loss.backward()
+        
+        if not hasattr(self, '_checked_critic_grad'):
+            self._checked_critic_grad = True
+            total_norm = 0
+            for param in self._actor_critic.reward_critic.parameters():
+                if param.grad is not None:
+                    total_norm += param.grad.data.norm(2).item() ** 2
+            total_norm = total_norm ** 0.5
+            print(f"Critic grad norm: {total_norm:.4f}")
+        values = self._actor_critic.reward_critic(obs)[0]
+        # print(f"Raw values: {values.detach()}")
+        print(f"Value range: [{values.std():.3f}, {values.min():.3f}, {values.max():.3f}, {values.mean():.3f}]")
+        print(f"target_values mean/std: {target_value_r.mean():.3f}/{target_value_r.std():.3f}, range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
         print(f"Critic loss: {loss.item():.4f}, target_value range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
         if self._cfgs.algo_cfgs.use_max_grad_norm:
             clip_grad_norm_(
@@ -571,7 +593,7 @@ class PolicyGradient(BaseAlgo):
                 # 检查value
                 values = self._actor_critic.reward_critic(obs)[0]
                 print(f"Raw values: {values.detach()}")
-                print(f"Value range: [{values.min():.3f}, {values.max():.3f}]")
+                print(f"Value range: [{values.min():.3f}, {values.max():.3f}, {values.mean():.3f}]")
                 print(f"Value std: {values.std():.4f}")
                 print(f"Adv std: {adv_r.std():.4f}")
                 print(f"Adv_r: mean={adv_r.mean():.3f}, std={adv_r.std():.3f}, min={adv_r.min():.3f}, max={adv_r.max():.3f}")

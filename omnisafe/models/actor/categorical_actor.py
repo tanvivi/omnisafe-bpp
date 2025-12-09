@@ -205,17 +205,26 @@ class CategoricalActor(Actor):
             obs = obs.unsqueeze(0)
         
         mask = obs[..., :self.num_bins]
+        if not hasattr(self, '_printed_actor_obs'):
+            self._printed_actor_obs = True
+            print(f"\n=== Actor Input ===")
+            print(f"Obs[0]: {obs[0]}")
+            print(f"Obs range: [{obs.min():.4f}, {obs.max():.4f}]")
         
         # 直接过MLP
         logits = self.net(obs)
         
+        if not hasattr(self, '_printed_logits'):
+            self._printed_logits = True
+            print(f"Raw logits[0]: {logits[0]}")
+            print(f"Logits range: [{logits.min():.4f}, {logits.max():.4f}, {logits.mean():.4f}, {logits.std():.4f}]")
         # Mask处理
         bool_mask = (mask < 0.5)
         all_masked = bool_mask.all(dim=-1, keepdim=True)
         if all_masked.any():
             bool_mask = torch.where(all_masked, torch.tensor(False, device=logits.device), bool_mask)
         
-        masked_logits = logits.masked_fill(bool_mask, -1e8)
+        masked_logits = logits.masked_fill(bool_mask, -20.0) # solve logits std explosion
         return Categorical(logits=masked_logits)
     
     def forward(self, obs):
