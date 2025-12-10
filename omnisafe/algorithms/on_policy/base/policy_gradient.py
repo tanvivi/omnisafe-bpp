@@ -457,7 +457,11 @@ class PolicyGradient(BaseAlgo):
                 loss += param.pow(2).sum() * self._cfgs.algo_cfgs.critic_norm_coef
 
         loss.backward()
-        
+        model_param_ids = [id(p) for p in self._actor_critic.reward_critic.parameters()]
+        opt_param_ids = []
+        for group in self._actor_critic.reward_critic_optimizer.param_groups:
+            opt_param_ids += [id(p) for p in group['params']]
+
         if not hasattr(self, '_checked_critic_grad'):
             self._checked_critic_grad = True
             total_norm = 0
@@ -465,20 +469,41 @@ class PolicyGradient(BaseAlgo):
                 if param.grad is not None:
                     total_norm += param.grad.data.norm(2).item() ** 2
             total_norm = total_norm ** 0.5
-            print(f"Critic grad norm: {total_norm:.4f}")
-        values = self._actor_critic.reward_critic(obs)[0]
+            # print(f"Critic grad norm: {total_norm:.4f}")
+        # values = self._actor_critic.reward_critic(obs)[0]
         # print(f"Raw values: {values.detach()}")
-        print(f"Value range: [{values.std():.3f}, {values.min():.3f}, {values.max():.3f}, {values.mean():.3f}]")
-        print(f"target_values mean/std: {target_value_r.mean():.3f}/{target_value_r.std():.3f}, range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
-        print(f"Critic loss: {loss.item():.4f}, target_value range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
+        # print(f"Value range: [{values.std():.3f}, {values.min():.3f}, {values.max():.3f}, {values.mean():.3f}]")
+        # print(f"target_values mean/std: {target_value_r.mean():.3f}/{target_value_r.std():.3f}, range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
+        # print(f"Critic loss: {loss.item():.4f}, target_value range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
         if self._cfgs.algo_cfgs.use_max_grad_norm:
             clip_grad_norm_(
                 self._actor_critic.reward_critic.parameters(),
                 self._cfgs.algo_cfgs.max_grad_norm,
             )
         distributed.avg_grads(self._actor_critic.reward_critic)
-        self._actor_critic.reward_critic_optimizer.step()
+        # first = next(self._actor_critic.reward_critic.parameters()).clone().detach()
+        # state = self._actor_critic.reward_critic_optimizer.state
+        # first_param = next(self._actor_critic.reward_critic.parameters())
+        # sid = None
+        # for k in state.keys():
+        #     # keys are parameter objects
+        #     if k.shape == first_param.shape:
+        #         sid = k
+        #         break
+        # print(">> CHECK: optimizer state entries:", len(state))
+        # if sid is not None:
+        #     st = state[sid]
+        #     print("  state for a param: has exp_avg?", 'exp_avg' in st, 'exp_avg_sq' in st, 'step' in st)
+        #     if 'exp_avg' in st:
+        #         print("   exp_avg mean", st['exp_avg'].mean().item(), "exp_avg_sq mean", st['exp_avg_sq'].mean().item(), "step", st.get('step', None))
+        # else:
+        #     print("  could not find matching state by shape; printing few keys' shapes:")
+        #     for k in list(state.keys())[:6]:
+        #         print("   key shape", getattr(k,'shape', None))
 
+        self._actor_critic.reward_critic_optimizer.step()
+        # second = next(self._actor_critic.reward_critic.parameters()).clone().detach()
+        # print("param diff:", (first - second).abs().mean().item())
         self._logger.store({'Loss/Loss_reward_critic': loss.mean().item()})
 
     def _update_cost_critic(self, obs: torch.Tensor, target_value_c: torch.Tensor) -> None:

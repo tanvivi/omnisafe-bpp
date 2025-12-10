@@ -67,7 +67,6 @@ class ActorCritic(nn.Module):
         """Initialize an instance of :class:`ActorCritic`."""
         super().__init__()
         bin_state_dim = model_cfgs.bin_state_dim
-        
         self.actor: Actor = ActorBuilder(
             obs_space=obs_space,
             act_space=act_space,
@@ -94,6 +93,7 @@ class ActorCritic(nn.Module):
         ).build_critic(critic_type='bs-v') #critic for bin selection
         self.add_module('actor', self.actor)
         self.add_module('reward_critic', self.reward_critic)
+        self.to(model_cfgs.device)
 
         if model_cfgs.actor.lr is not None:
             self.actor_optimizer: optim.Optimizer

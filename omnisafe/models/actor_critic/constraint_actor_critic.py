@@ -76,18 +76,18 @@ class ConstraintActorCritic(ActorCritic):
             bin_state_dim=bin_state_dim
         ).build_critic('bs-v')
         self.add_module('cost_critic', self.cost_critic)
-        self.reward_critic: Critic = CriticBuilder(
-            obs_space=obs_space,
-            act_space=act_space,
-            hidden_sizes=model_cfgs.critic.hidden_sizes,
-            activation=model_cfgs.critic.activation,
-            weight_initialization_mode=model_cfgs.weight_initialization_mode,
-            num_critics=1,
-            use_obs_encoder=False,
-            item_dim=3,
-            bin_state_dim=bin_state_dim
-        ).build_critic(critic_type='bs-v') #critic for bin selection
-
+        # self.reward_critic: Critic = CriticBuilder(
+        #     obs_space=obs_space,
+        #     act_space=act_space,
+        #     hidden_sizes=model_cfgs.critic.hidden_sizes,
+        #     activation=model_cfgs.critic.activation,
+        #     weight_initialization_mode=model_cfgs.weight_initialization_mode,
+        #     num_critics=1,
+        #     use_obs_encoder=False,
+        #     item_dim=3,
+        #     bin_state_dim=bin_state_dim
+        # ).build_critic(critic_type='bs-v') #critic for bin selection
+        self.cost_critic.to(model_cfgs.device) #make sure cost critic is on the right device
         if model_cfgs.critic.lr is not None:
             self.cost_critic_optimizer: optim.Optimizer
             self.cost_critic_optimizer = optim.Adam(

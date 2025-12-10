@@ -19,7 +19,7 @@ defaults:
   # training configurations
   train_cfgs:
     # device to use for training, options: cpu, cuda, cuda:0, cuda:0,1, etc.
-    device: cpu
+    device: cuda:0
     # number of threads for torch
     torch_threads: 16
     # number of vectorized environments
@@ -51,7 +51,7 @@ defaults:
     # use max gradient norm
     use_max_grad_norm: True
     # max gradient norm
-    max_grad_norm: 40.0
+    max_grad_norm: 0.5 # only works when modified here
     # use critic norm
     use_critic_norm: True
     # critic norm coefficient
@@ -92,6 +92,7 @@ defaults:
     window_lens: 100
   # model configurations
   model_cfgs:
+    device: cuda:0 # for device setting, only set here works
     # bin_state_dim
     bin_state_dim: 8
     # weight initialization mode
