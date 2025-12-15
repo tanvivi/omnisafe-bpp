@@ -27,7 +27,7 @@ from omnisafe.models.critic.critic_builder import CriticBuilder
 from omnisafe.typing import OmnisafeSpace
 from omnisafe.utils.config import ModelConfig
 from omnisafe.utils.schedule import PiecewiseSchedule, Schedule
-
+from omnisafe.models.actor.categorical_actor import ShareNet
 
 class ActorCritic(nn.Module):
     """Class for ActorCritic.
@@ -67,6 +67,26 @@ class ActorCritic(nn.Module):
         """Initialize an instance of :class:`ActorCritic`."""
         super().__init__()
         bin_state_dim = model_cfgs.bin_state_dim
+        bin_size=model_cfgs.bin_size
+        embed_size=model_cfgs.embed_size
+        num_layers=model_cfgs.num_layers
+        heads=model_cfgs.heads
+        dropout=model_cfgs.dropout
+        padding_mask=model_cfgs.padding_mask
+        device=model_cfgs.device
+        share_net=model_cfgs.share_net  # Accept shared network
+        
+        if share_net is None or share_net == 'None':
+            share_net = ShareNet(
+            num_bins=act_space.n,
+            bin_size=bin_size,
+            embed_size=embed_size,
+            num_layers=3,
+            heads=8,
+            device=device
+        )
+        else:
+            share_net = share_net
         self.actor: Actor = ActorBuilder(
             obs_space=obs_space,
             act_space=act_space,
@@ -74,6 +94,14 @@ class ActorCritic(nn.Module):
             activation=model_cfgs.actor.activation,
             weight_initialization_mode=model_cfgs.weight_initialization_mode,
             bin_state_dim=bin_state_dim,
+            bin_size=bin_size,
+            embed_size=embed_size,
+            num_layers=num_layers,
+            heads=heads,
+            dropout=dropout,
+            padding_mask=padding_mask,
+            share_net=share_net,
+            device=device,
         ).build_actor(
             actor_type=model_cfgs.actor_type,
         )
@@ -89,7 +117,15 @@ class ActorCritic(nn.Module):
             # The `bin_state_dim` parameter in the `ActorCritic` class is used in the initialization
             # of the critic network. It specifies the dimension of the state representation for the
             # critic that is specifically used for bin selection.
-            bin_state_dim=bin_state_dim
+            bin_state_dim=bin_state_dim,
+            bin_size=bin_size,
+            embed_size=embed_size,
+            num_layers=num_layers,
+            heads=heads,
+            dropout=dropout,
+            padding_mask=padding_mask,
+            share_net=share_net,
+            device=device,
         ).build_critic(critic_type='bs-v') #critic for bin selection
         self.add_module('actor', self.actor)
         self.add_module('reward_critic', self.reward_critic)

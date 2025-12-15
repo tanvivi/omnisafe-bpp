@@ -96,7 +96,20 @@ class VectorOnPolicyBuffer(OnPolicyBuffer):
     def store(self, **data: torch.Tensor) -> None:
         """Store vectorized data into vectorized buffer."""
         for i, buffer in enumerate(self.buffers):
-            buffer.store(**{k: v[i] for k, v in data.items()})
+            # buffer.store(**{k: v[i] for k, v in data.items()})
+            try:
+                buffer.store(**{k: v[i] for k, v in data.items()})
+            except IndexError as e:
+                print("\n========== DEBUG INFO ==========")
+                for k, v in data.items():
+                    if hasattr(v, 'shape'):
+                        print(f"Key: {k}, Shape: {v.shape}, Is 0-dim? {v.ndim==0}")
+                        if v.ndim == 0:
+                            print(f"!!! FOUND CULPRIT: {k} is 0-dim !!!")
+                    else:
+                        print(f"Key: {k}, Type: {type(v)} (Not a tensor)")
+                print("================================\n")
+                raise e  # 重新抛出异常，让程序停止
 
     def finish_path(
         self,

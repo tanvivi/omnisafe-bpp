@@ -86,6 +86,15 @@ class ActorBuilder:
                 activation=self._activation,
                 weight_initialization_mode=self._weight_initialization_mode,
                 bin_state_dim=self._kwargs.get('bin_state_dim', 5),
+                num_bins=self._act_space.n,
+                bin_size=self._kwargs.get('bin_size', [10, 10, 10]),
+                embed_size=self._kwargs.get('embed_size', 128),
+                num_layers=self._kwargs.get('num_layers', 3),
+                heads=self._kwargs.get('heads', 8),
+                dropout=self._kwargs.get('dropout', 0.1),
+                padding_mask=self._kwargs.get('padding_mask', True),
+                share_net=self._kwargs.get('share_net', None),  # Accept shared network
+                device=self._kwargs.get('device','cuda:0')
             )
         if actor_type == 'gaussian_learning':
             return GaussianLearningActor(

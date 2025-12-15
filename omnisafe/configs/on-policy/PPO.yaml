@@ -94,7 +94,21 @@ defaults:
   model_cfgs:
     device: cuda:0 # for device setting, only set here works
     # bin_state_dim
-    bin_state_dim: 8
+    bin_state_dim: 5
+    # bin size
+    bin_size: [10, 10, 10]
+    # embedding size
+    embed_size: 128
+    # number of layers
+    num_layers: 3
+    # number of heads
+    heads: 8
+    # dropout rate
+    dropout: 0.1
+    # whether to use padding mask
+    padding_mask: True
+    # share network between actor and critic
+    share_net: null
     # weight initialization mode
     weight_initialization_mode: "kaiming_uniform"
     # actor type, options: gaussian, gaussian_learning

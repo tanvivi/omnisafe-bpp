@@ -64,6 +64,14 @@ class ConstraintActorCritic(ActorCritic):
         """Initialize an instance of :class:`ConstraintActorCritic`."""
         super().__init__(obs_space, act_space, model_cfgs, epochs)
         bin_state_dim = model_cfgs.bin_state_dim
+        bin_size=model_cfgs.bin_size
+        embed_size=model_cfgs.embed_size
+        num_layers=model_cfgs.num_layers
+        heads=model_cfgs.heads
+        dropout=model_cfgs.dropout
+        padding_mask=model_cfgs.padding_mask
+        share_net=model_cfgs.share_net  # Accept shared network
+        device=model_cfgs.device
         self.cost_critic: Critic = CriticBuilder(
             obs_space=obs_space,
             act_space=act_space,
@@ -73,7 +81,15 @@ class ConstraintActorCritic(ActorCritic):
             num_critics=1,
             use_obs_encoder=False,
             item_dim=3,
-            bin_state_dim=bin_state_dim
+            bin_state_dim=bin_state_dim,
+            bin_size=bin_size,
+            embed_size=embed_size,
+            num_layers=num_layers,
+            heads=heads,
+            dropout=dropout,
+            padding_mask=padding_mask,
+            share_net=share_net,
+            device=device,
         ).build_critic('bs-v')
         self.add_module('cost_critic', self.cost_critic)
         # self.reward_critic: Critic = CriticBuilder(

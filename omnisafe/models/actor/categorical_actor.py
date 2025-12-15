@@ -4,228 +4,261 @@ import torch.nn as nn
 import numpy as np
 from torch.distributions import Categorical, Distribution
 from omnisafe.utils.model import build_mlp_network
+import torch.nn.functional as F
+from typing import Dict, Any, Tuple, Union, Sequence
 
-class BinItemMatcher(nn.Module):
-    def __init__(self, bin_dim, item_dim, hidden_sizes, activation='relu'):
+def init_(m, gain=1.0):
+    """Weight initialization helper"""
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight, gain=gain)
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    return m
+
+
+class EncoderBlock(nn.Module):
+    """Transformer encoder block for bin-item interaction"""
+    def __init__(self, embed_size, heads, dropout, forward_expansion):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(embed_size, heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(embed_size)
+        self.norm2 = nn.LayerNorm(embed_size)
+        
+        self.feed_forward = nn.Sequential(
+            nn.Linear(embed_size, forward_expansion * embed_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(forward_expansion * embed_size, embed_size),
+        )
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, item_embed, bin_embed, mask=None):
+        # Self-attention for bins
+        attn_out, _ = self.attention(bin_embed, bin_embed, bin_embed, key_padding_mask=~mask if mask is not None else None)
+        bin_embed = self.norm1(bin_embed + self.dropout(attn_out))
+        ff_out = self.feed_forward(bin_embed)
+        bin_embed = self.norm2(bin_embed + self.dropout(ff_out))
+        
+        # Cross-attention: item attends to bins
+        item_attn, _ = self.attention(item_embed, bin_embed, bin_embed, key_padding_mask=~mask if mask is not None else None)
+        item_embed = self.norm1(item_embed + self.dropout(item_attn))
+        item_ff = self.feed_forward(item_embed)
+        item_embed = self.norm2(item_embed + self.dropout(item_ff))
+        
+        return item_embed, bin_embed
+
+
+class ShareNet(nn.Module):
+    """Shared feature extractor for bins and items"""
+    def __init__(
+        self,
+        num_bins: int = 5,
+        bin_size: Sequence[int] = [10, 10, 10],
+        embed_size: int = 128,
+        num_layers: int = 3,
+        forward_expansion: int = 4,
+        heads: int = 8,
+        dropout: float = 0.1,
+        device: Union[str, int, torch.device] = "cpu",
+    ) -> None:
         super().__init__()
         
-        # 我们取 hidden_sizes 的第一层作为 Embedding 维度
-        embed_dim = hidden_sizes[0] 
+        self.device = device
+        self.num_bins = num_bins
+        self.embed_size = embed_size
+        self.hmap_size = bin_size[0] * bin_size[1]
         
-        # 1. 箱子特征编码器 (Bin Tower)
-        # Input: bin_dim -> Output: embed_dim
-        self.bin_encoder = nn.Sequential(
-            nn.Linear(bin_dim, embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU()
-        )
+        # Observation structure
+        self.mask_size = num_bins
+        self.bin_feature_size = num_bins * 5
+        self.hmap_total_size = num_bins * self.hmap_size
+        self.item_size = 3
         
-        # 2. 物品特征编码器 (Item Tower)
-        # Input: item_dim -> Output: embed_dim
+        # Item encoder
         self.item_encoder = nn.Sequential(
-            nn.Linear(item_dim, embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU()
+            init_(nn.Linear(3, 64)),
+            nn.LeakyReLU(),
+            init_(nn.Linear(64, embed_size)),
         )
         
-        # 3. 融合后的处理层 (Interaction MLP)
-        # Input: embed_dim * 2 (拼接后) -> Output: embed_dim
-        # 这一层负责学习 "匹配关系"
-        self.interact_net = build_mlp_network(
-            sizes=[embed_dim * 2, *hidden_sizes], 
-            activation=activation
+        # Heightmap encoder
+        self.heightmap_encoder = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(64 * 5 * 5, embed_size // 2)
         )
         
-        # 初始化
-        for m in self.modules():
-            if isinstance(m, torch.nn.Linear):
-                torch.nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                torch.nn.init.constant_(m.bias, 0.0)
-
-    def forward(self, bin_feats, item_feat):
-        """
-        bin_feats: (Batch, Num_Bins, Bin_Dim)
-        item_feat: (Batch, Item_Dim) 
-        """
-        batch_size, num_bins, _ = bin_feats.shape
-        
-        # --- A. 分别编码 ---
-        bin_emb = self.bin_encoder(bin_feats) # (Batch, N, Hidden)
-        
-        # Item 需要扩充维度以匹配箱子数量
-        # (Batch, Hidden) -> (Batch, 1, Hidden) -> (Batch, N, Hidden)
-        item_emb = self.item_encoder(item_feat).unsqueeze(1).expand(-1, num_bins, -1)
-        
-        # --- B. 特征融合 (Concatenate) ---
-        # 将两者拼在一起，让后面的 MLP 去计算它们的非线性关系
-        combined = torch.cat([bin_emb, item_emb], dim=-1) # (Batch, N, 2*Hidden)
-        
-        # --- C. 深度交互 ---
-        features = self.interact_net(combined) # (Batch, N, Hidden)
-        
-        return features
-
-# class CategoricalActor(Actor):
-#     def __init__(self, obs_space, act_space, hidden_sizes, activation = 'relu', weight_initialization_mode = 'kaiming_uniform',
-#                 item_dim=3, bin_state_dim=5):
-#         super().__init__(obs_space, act_space, hidden_sizes, activation, weight_initialization_mode)
-#         self.num_bins = self._act_dim
-#         self.item_dim = item_dim
-#         print(f"DEBUG: CategoricalActor bin_state_dim: {bin_state_dim}")
-#         self.bin_state_dim = bin_state_dim
-#         self.matcher = BinItemMatcher(bin_state_dim, item_dim, hidden_sizes, activation)
-#         self.head = nn.Linear(hidden_sizes[-1], 1)
-#         torch.nn.init.orthogonal_(self.head.weight, gain=0.01)
-#         torch.nn.init.constant_(self.head.bias, 0.0)
-        
-#         self.ln_bin = nn.Identity()
-#         self.ln_item = nn.Identity()
-    
-#     def _distribution(self, obs: torch.Tensor) -> Categorical:
-#         """
-#         Args: obs
-#         Return: the categorical distribution
-#         """
-#         # print(obs.shape)
-#         self._device = self.head.weight.device
-#         # print(f"DEBUG: obs device: {obs.device}, model device: {self._device}")
-#         if obs.device != self._device:
-#             obs = obs.to(self._device)
-#         if obs.dim() == 1:
-#             obs = obs.unsqueeze(0)
-#         batch_size = obs.shape[0]
-#         mask = obs[..., :self._act_dim] # extract mask
-#         # print(f"DEBUG: obs: {obs}, mask : {mask}")
-#         bin_part_end = self.num_bins + (self.num_bins * self.bin_state_dim)
-#         bin_flat = obs[:, self.num_bins:bin_part_end] # extract bin states
-#         item_features = obs[:, bin_part_end:] # extract item features
-        
-#         bin_features = bin_flat.view(batch_size, self.num_bins, self.bin_state_dim)
-        
-#         bin_features = self.ln_bin(bin_features)
-#         item_features = self.ln_item(item_features)
-        
-#         features = self.matcher(bin_features, item_features) # (B, N, H)
-#         logits = self.head(features).squeeze(-1) # (B, N)
-#         # logits = 5.0 * torch.tanh(logits / 5.0)
-#         bool_mask = (mask < 0.5)
-#         all_masked = bool_mask.all(dim=-1, keepdim=True)
-#         if all_masked.any():
-#             bool_mask = torch.where(all_masked, torch.tensor(False, device=logits.device), bool_mask)
-#         masked_logits = logits.masked_fill(bool_mask, -1e2)
-#         return Categorical(logits=masked_logits) # important, used to avoid being considered as probs
-    
-#     def forward(self, obs: torch.Tensor)-> Distribution:
-#         """
-#         Args: obs (torch.Tensor): Observation from environments.
-#         Returns: The current distribution.
-#         """
-#         self._current_dist = self._distribution(obs)
-#         self._after_inference = True
-#         return self._current_dist
-
-#     def predict(self, obs, deterministic = False)-> torch.Tensor:
-#         """Predict the action given observation
-#         Args:
-#             obs (torch.Tensor): Observation from environments.
-#             deterministic (bool, optional): Whether to use deterministic policy. Defaults to False.
-
-#         Returns: The mean of the distribution if deterministic is True, otherwise the sampled action.
-#         """
-#         self._current_dist = self._distribution(obs)
-#         self._after_inference = True
-#         if deterministic:
-#             # return self._current_dist.probs.argmax(dim=-1)
-#             action = torch.argmax(self._current_dist.probs, dim=-1)
-#         else:
-#             action = self._current_dist.sample()
-#         return action.squeeze(-1) if action.dim() > 1 else action
-    
-#     def log_prob(self, act) ->torch.Tensor:
-#         """compute the log prob of action
-
-#         Args:
-#             act (_type_): _description_
-
-#         Returns:
-#             torch.Tensor: _description_
-#         """
-#         assert self._after_inference, 'log_prob() should be called after predict() or forward()'
-#         self._after_inference = False
-#         if act.dim() == 1:
-#             act = act.unsqueeze(1)
-#         return self._current_dist.log_prob(act.long())
-    
-#     # to satisfy the format of base
-#     @property
-#     def std(self) -> float:
-#         # pass
-#         return torch.zeros(1, device=self._device)
-    
-#     @std.setter
-#     def std(self, std) -> None:
-#         pass
-
-class CategoricalActor(Actor):
-    """简化版Actor - 直接MLP，与SimpleBSCritic匹配"""
-    def __init__(self, obs_space, act_space, hidden_sizes, 
-                 activation='relu', weight_initialization_mode='kaiming_uniform',
-                 **kwargs):  # 接受但忽略item_dim, bin_state_dim等
-        super().__init__(obs_space, act_space, hidden_sizes, activation, weight_initialization_mode)
-        self.num_bins = self._act_dim
-        
-        # 直接处理完整obs
-        obs_dim = obs_space.shape[0]
-        
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_sizes[0]),
-            nn.ReLU(),
-            nn.Linear(hidden_sizes[0], hidden_sizes[0]),
-            nn.ReLU(),
-            nn.Linear(hidden_sizes[0], self.num_bins)
+        # Bin feature encoder
+        self.bin_feature_encoder = nn.Sequential(
+            init_(nn.Linear(5, embed_size // 2)),
+            nn.LeakyReLU(),
         )
         
-        # Xavier初始化
-        for m in self.net.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                nn.init.constant_(m.bias, 0.0)
+        self.bin_proj = init_(nn.Linear(embed_size, embed_size))
         
-        # 最后一层小初始化
-        nn.init.orthogonal_(self.net[-1].weight, gain=0.01)
-        nn.init.constant_(self.net[-1].bias, 0.0)
-    
-    def _distribution(self, obs: torch.Tensor) -> Categorical:
+        # Transformer backbone
+        self.backbone = nn.ModuleList([
+            EncoderBlock(
+                embed_size=embed_size,
+                heads=heads,
+                dropout=dropout,
+                forward_expansion=forward_expansion,
+            )
+            for _ in range(num_layers)
+        ])
+        
+    def parse_observation(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Parse flat observation into structured components"""
+        idx = 0
+        mask = obs[:, idx:idx+self.mask_size]
+        idx += self.mask_size
+        
+        bin_features_flat = obs[:, idx:idx+self.bin_feature_size]
+        bin_features = bin_features_flat.reshape(-1, self.num_bins, 5)
+        idx += self.bin_feature_size
+        
+        hmaps_flat = obs[:, idx:idx+self.hmap_total_size]
+        hmaps = hmaps_flat.reshape(-1, self.num_bins, int(np.sqrt(self.hmap_size)), int(np.sqrt(self.hmap_size)))
+        idx += self.hmap_total_size
+        
+        item_features = obs[:, idx:idx+self.item_size]
+        
+        return mask, bin_features, hmaps, item_features
+        
+    def forward(
+        self,
+        obs: Union[np.ndarray, torch.Tensor],
+        state: Any = None,
+        mask_input: torch.Tensor = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, Any]:
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+        
+        mask, bin_features, hmaps, item_features = self.parse_observation(obs)
+        
+        if mask_input is not None:
+            mask = mask_input
+        
+        mask = mask.bool()
+        if (~mask).all(dim=1).any():
+            mask[(~mask).all(dim=1), 0] = True
+        batch_size = obs.shape[0]
+        
+        # Encode item
+        item_embedding = self.item_encoder(item_features).unsqueeze(1)
+        
+        # Encode heightmaps
+        hmaps_input = hmaps.unsqueeze(2)
+        hmaps_flat = hmaps_input.reshape(-1, 1, hmaps.shape[2], hmaps.shape[3])
+        hm_encoded = self.heightmap_encoder(hmaps_flat)
+        hm_encoded = hm_encoded.view(batch_size, self.num_bins, -1)
+        
+        # Encode bin features
+        bin_encoded = self.bin_feature_encoder(bin_features)
+        
+        # Combine
+        bin_embedding = torch.cat([hm_encoded, bin_encoded], dim=-1)
+        bin_embedding = self.bin_proj(bin_embedding)
+        
+        # Transformer
+        for layer in self.backbone:
+            item_embedding, bin_embedding = layer(item_embedding, bin_embedding, mask)
+        
+        return item_embedding, bin_embedding, state
+
+
+class CategoricalActor(nn.Module):
+    """OmniSafe-compatible Actor with shared Transformer backbone"""
+    def __init__(
+        self,
+        obs_space,
+        act_space,
+        hidden_sizes: list = None,
+        activation: str = 'relu',
+        weight_initialization_mode: str = 'kaiming_uniform',
+        num_bins: int = 5,
+        bin_size: list = [10, 10, 10],
+        embed_size: int = 128,
+        num_layers: int = 3,
+        heads: int = 8,
+        dropout: float = 0.1,
+        padding_mask: bool = True,
+        share_net: ShareNet = None,  # Accept shared network
+        device: Union[str, int, torch.device] = "cuda:0",
+        **kwargs
+    ) -> None:
+        super().__init__()
+        
+        self._act_dim = num_bins
+        self.num_bins = num_bins
+        self.padding_mask = padding_mask
+        self.device = device
+        
+        # Use provided shared network or create new one
+        if share_net is not None:
+            self.preprocess = share_net
+        else:
+            self.preprocess = ShareNet(
+                num_bins=num_bins,
+                bin_size=bin_size,
+                embed_size=embed_size,
+                num_layers=num_layers,
+                heads=heads,
+                dropout=dropout,
+                device=device
+            )
+        
+        # Actor-specific layers
+        self.layer_1 = nn.Sequential(
+            init_(nn.Linear(embed_size, embed_size)),
+            nn.LeakyReLU(),
+        )
+        self.layer_2 = nn.Sequential(
+            init_(nn.Linear(embed_size, embed_size)),
+            nn.LeakyReLU(),
+        )
+        
+        self._current_dist = None
+        self._after_inference = False
+        
+    def _distribution(self, obs: torch.Tensor):
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+        
         device = next(self.parameters()).device
         if obs.device != device:
             obs = obs.to(device)
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
         
-        mask = obs[..., :self.num_bins]
-        if not hasattr(self, '_printed_actor_obs'):
-            self._printed_actor_obs = True
-            print(f"\n=== Actor Input ===")
-            print(f"Obs[0]: {obs[0]}")
-            print(f"Obs range: [{obs.min():.4f}, {obs.max():.4f}]")
+        # Parse mask
+        mask, _, _, _ = self.preprocess.parse_observation(obs)
+        mask = mask.bool() if self.padding_mask else None
         
-        # 直接过MLP
-        logits = self.net(obs)
+        # Extract features
+        item_embedding, bin_embedding, _ = self.preprocess(obs, None, mask)
         
-        if not hasattr(self, '_printed_logits'):
-            self._printed_logits = True
-            print(f"Raw logits[0]: {logits[0]}")
-            print(f"Logits range: [{logits.min():.4f}, {logits.max():.4f}, {logits.mean():.4f}, {logits.std():.4f}]")
-        # Mask处理
-        bool_mask = (mask < 0.5)
-        all_masked = bool_mask.all(dim=-1, keepdim=True)
-        if all_masked.any():
-            bool_mask = torch.where(all_masked, torch.tensor(False, device=logits.device), bool_mask)
+        # Process
+        item_embedding = self.layer_1(item_embedding)
+        bin_embedding = self.layer_2(bin_embedding).permute(0, 2, 1)
         
-        masked_logits = logits.masked_fill(bool_mask, -20.0) # solve logits std explosion
-        return Categorical(logits=masked_logits)
+        # Compute logits
+        logits = torch.bmm(item_embedding, bin_embedding).squeeze(1)
+        
+        # Apply mask
+        if mask is not None:
+            bool_mask = ~mask
+            all_masked = bool_mask.all(dim=-1, keepdim=True)
+            if all_masked.any():
+                bool_mask = torch.where(all_masked, torch.tensor(False, device=device), bool_mask)
+
+            logits = logits.masked_fill(bool_mask, -20.0)
+        
+        return Categorical(logits=logits)
     
     def forward(self, obs):
         self._current_dist = self._distribution(obs)
@@ -239,7 +272,7 @@ class CategoricalActor(Actor):
         return action.squeeze(-1) if action.dim() > 1 else action
     
     def log_prob(self, act):
-        assert self._after_inference
+        assert self._after_inference, "Must call forward() or predict() before log_prob()"
         self._after_inference = False
         if act.dim() == 1:
             act = act.unsqueeze(1)
@@ -252,5 +285,160 @@ class CategoricalActor(Actor):
     @std.setter
     def std(self, std):
         pass
+class BSCritic(nn.Module):
+    """OmniSafe-compatible Critic with shared Transformer backbone"""
+    def __init__(
+        self,
+        obs_space,
+        act_space,
+        hidden_sizes: list = None,
+        activation: str = 'relu',
+        weight_initialization_mode: str = 'kaiming_uniform',
+        num_bins: int = 5,
+        bin_size: list = [10, 10, 10],
+        embed_size: int = 128,
+        num_layers: int = 3,
+        heads: int = 8,
+        dropout: float = 0.1,
+        padding_mask: bool = True,
+        share_net: ShareNet = None,  # Accept shared network
+        device: Union[str, int, torch.device] = "cuda:0",
+        **kwargs
+    ) -> None:
+        super().__init__()
+        
+        self.num_bins = num_bins
+        self.padding_mask = padding_mask
+        self.device = device
+        
+        # Use provided shared network or create new one
+        if share_net is not None:
+            self.preprocess = share_net
+        else:
+            self.preprocess = ShareNet(
+                num_bins=num_bins,
+                bin_size=bin_size,
+                embed_size=embed_size,
+                num_layers=num_layers,
+                heads=heads,
+                dropout=dropout,
+                device=device
+            )
+        
+        # Critic-specific layers
+        self.layer_1 = nn.Sequential(
+            init_(nn.Linear(embed_size, embed_size)),
+            nn.LeakyReLU(),
+        )
+        self.layer_2 = nn.Sequential(
+            init_(nn.Linear(embed_size, embed_size)),
+            nn.LeakyReLU(),
+        )
+        self.layer_3 = nn.Sequential(
+            init_(nn.Linear(2 * embed_size, embed_size)),
+            nn.LeakyReLU(),
+            init_(nn.Linear(embed_size, embed_size)),
+            nn.LeakyReLU(),
+            init_(nn.Linear(embed_size, 1))
+        )
+        
+    def forward(self, obs: Union[np.ndarray, torch.Tensor], **kwargs) -> torch.Tensor:
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+        
+        device = next(self.parameters()).device
+        if obs.device != device:
+            obs = obs.to(device)
+        if obs.dim() == 1:
+            obs = obs.unsqueeze(0)
+        
+        # Parse mask
+        mask, _, _, _ = self.preprocess.parse_observation(obs)
+        mask = mask.bool() if self.padding_mask else None
+        
+        # Extract features
+        item_embedding, bin_embedding, _ = self.preprocess(obs, None, mask)
+        
+        # Process
+        item_embedding = self.layer_1(item_embedding)
+        bin_embedding = self.layer_2(bin_embedding)
+        
+        # Aggregate
+        item_embedding = item_embedding.squeeze(1)
+        if mask is not None:
+            bin_embedding = torch.sum(bin_embedding * mask.unsqueeze(-1), dim=1)
+        else:
+            bin_embedding = torch.sum(bin_embedding, dim=1)
+        
+        # Predict value
+        joint_embedding = torch.cat([item_embedding, bin_embedding], dim=-1)
+        state_value = self.layer_3(joint_embedding)
+        return state_value
+
+
+# Example usage with shared parameters
+# if __name__ == "__main__":
+    # from gym import spaces
     
+    # device = "cuda" if torch.cuda.is_available() else "cpu"
     
+    # num_bins = 5
+    # bin_size = [10, 10, 10]
+    # embed_size = 128
+    
+    # obs_dim = num_bins + num_bins * 5 + num_bins * 100 + 3
+    # obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+    # act_space = spaces.Discrete(num_bins)
+    
+    # # Create shared feature extractor
+    # shared_net = ShareNet(
+    #     num_bins=num_bins,
+    #     bin_size=bin_size,
+    #     embed_size=embed_size,
+    #     num_layers=3,
+    #     heads=8,
+    #     device=device
+    # )
+    
+    # # Initialize actor and critic with shared network
+    # actor = CategoricalActor(
+    #     obs_space=obs_space,
+    #     act_space=act_space,
+    #     num_bins=num_bins,
+    #     bin_size=bin_size,
+    #     embed_size=embed_size,
+    #     share_net=shared_net,  # Share parameters
+    #     device=device
+    # )
+    
+    # critic = BSCritic(
+    #     obs_space=obs_space,
+    #     act_space=act_space,
+    #     num_bins=num_bins,
+    #     bin_size=bin_size,
+    #     embed_size=embed_size,
+    #     share_net=shared_net,  # Share parameters
+    #     device=device
+    # )
+    
+    # # Verify parameter sharing
+    # print(f"✓ Shared parameters: {actor.preprocess is critic.preprocess}")
+    
+    # # Test
+    # batch_size = 4
+    # obs_flat = torch.randn(batch_size, obs_dim).to(device)
+    # obs_flat[:, :num_bins] = torch.tensor([
+    #     [1, 1, 1, 0, 0],
+    #     [1, 1, 0, 0, 0],
+    #     [1, 0, 0, 0, 0],
+    #     [1, 1, 1, 1, 0]
+    # ], dtype=torch.float32).to(device)
+    
+    # action = actor.predict(obs_flat)
+    # dist = actor.forward(obs_flat)
+    # log_prob = actor.log_prob(action)
+    # value = critic(obs_flat)
+    
+    # print(f"\nActions: {action}")
+    # print(f"Log probs: {log_prob}")
+    # print(f"Values: {value}")

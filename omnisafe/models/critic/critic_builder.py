@@ -19,7 +19,7 @@ from __future__ import annotations
 from omnisafe.models.base import Critic
 from omnisafe.models.critic.q_critic import QCritic
 from omnisafe.models.critic.v_critic import VCritic
-from omnisafe.models.critic.bs_critic import BSCritic
+from omnisafe.models.actor.categorical_actor import BSCritic
 from omnisafe.typing import Activation, CriticType, InitFunction, OmnisafeSpace
 
 
@@ -115,7 +115,15 @@ class CriticBuilder:
                 num_critics=self._num_critics,
                 item_dim=self._kwargs.get('item_dim', 3),
                 bin_state_dim=self._kwargs.get('bin_state_dim', 5),
-                num_bins=self._act_space.n
+                num_bins=self._act_space.n,
+                bin_size=self._kwargs.get('bin_size', [10, 10, 10]),
+                embed_size=self._kwargs.get('embed_size', 128),
+                num_layers=self._kwargs.get('num_layers', 3),
+                heads=self._kwargs.get('heads', 8),
+                dropout=self._kwargs.get('dropout', 0.1),
+                padding_mask=self._kwargs.get('padding_mask', True),
+                share_net=self._kwargs.get('share_net', None),  # Accept shared network
+                device=self._kwargs.get('device','cuda:0')
             )
 
         raise NotImplementedError(
