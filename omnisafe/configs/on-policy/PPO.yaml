@@ -98,11 +98,11 @@ defaults:
     # bin size
     bin_size: [10, 10, 10]
     # embedding size
-    embed_size: 128
+    embed_size: 64
     # number of layers
     num_layers: 3
     # number of heads
-    heads: 8
+    heads: 2
     # dropout rate
     dropout: 0.1
     # whether to use padding mask
