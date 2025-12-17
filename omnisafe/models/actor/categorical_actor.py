@@ -213,7 +213,6 @@ class ShareNet(nn.Module):
         idx += self.hmap_total_size
         
         item_features = obs[:, idx:idx+self.item_size]
-        
         return mask, bin_features, hmaps, item_features
         
     def forward(
@@ -418,20 +417,16 @@ class BSCritic(nn.Module):
         # Critic-specific layers
         self.layer_1 = nn.Sequential(
             init_val_(nn.Linear(embed_size, embed_size)),
-            # nn.LayerNorm(embed_size),
             nn.LeakyReLU(),
         )
         self.layer_2 = nn.Sequential(
             init_val_(nn.Linear(embed_size, embed_size)),
-            # nn.LayerNorm(embed_size),
             nn.LeakyReLU(),
         )
         self.layer_3 = nn.Sequential(
-            init_val_(nn.Linear(embed_size, embed_size)),
-            # nn.LayerNorm(embed_size),
+            init_val_(nn.Linear(2*embed_size, embed_size)),
             nn.LeakyReLU(),
             init_val_(nn.Linear(embed_size, embed_size)),
-            # nn.LayerNorm(embed_size),
             nn.LeakyReLU(),
             init_val_(nn.Linear(embed_size, 1))
         )
@@ -466,8 +461,8 @@ class BSCritic(nn.Module):
             bin_embedding = torch.sum(bin_embedding, dim=1)
         
         # Predict value
-        # joint_embedding = torch.cat([item_embedding, bin_embedding], dim=-1)
-        joint_embedding = self.ln_backbone(item_embedding)
+        joint_embedding = torch.cat([item_embedding, bin_embedding], dim=-1)
+        # joint_embedding = self.ln_backbone(item_embedding)
         state_value = self.layer_3(joint_embedding)
         return state_value
 
