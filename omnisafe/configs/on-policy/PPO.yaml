@@ -35,11 +35,11 @@ defaults:
     # number of iterations to update the policy
     update_iters: 10
     # batch size for each iteration
-    batch_size: 256
+    batch_size: 512
     # target kl divergence
     target_kl: 0.02
     # entropy coefficient
-    entropy_coef: 0.01
+    entropy_coef: 0.02
     # normalize reward
     reward_normalize: False
     # normalize cost
@@ -129,14 +129,14 @@ defaults:
       activation: tanh
       # out_activation: tanh
       # learning rate
-      lr: 0.00005
+      lr: 0.00001
     critic:
       # hidden layer sizes
       hidden_sizes: [256, 256]
       # activation function
       activation: tanh
       # learning rate
-      lr: 0.00005
+      lr: 0.00001
 
 ShadowHandCatchOver2UnderarmSafeFinger:
   # training configurations
