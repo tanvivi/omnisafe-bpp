@@ -31,7 +31,7 @@ defaults:
   # algorithm configurations
   algo_cfgs:
     # number of steps to update the policy
-    steps_per_epoch: 2048
+    steps_per_epoch: 4096
     # number of iterations to update the policy
     update_iters: 5
     # batch size for each iteration
@@ -57,7 +57,7 @@ defaults:
     # critic norm coefficient
     critic_norm_coef: 0.001
     # reward discount factor
-    gamma: 0.99
+    gamma: 1.00
     # cost discount factor
     cost_gamma: 0.99
     # lambda for gae
@@ -79,11 +79,13 @@ defaults:
   # logger configurations
   logger_cfgs:
     # use wandb for logging
-    use_wandb: False
+    use_wandb: True
     # wandb project name
-    wandb_project: omnisafe
+    wandb_project: bin-selection
+    # wandb run name
+    wandb_run_name: bins_2_lr_1e-5_v1
     # use tensorboard for logging
-    use_tensorboard: True
+    use_tensorboard: False
     # save model frequency
     save_model_freq: 100
     # save logger path
@@ -127,14 +129,14 @@ defaults:
       activation: tanh
       # out_activation: tanh
       # learning rate
-      lr: 0.0001
+      lr: 0.00005
     critic:
       # hidden layer sizes
       hidden_sizes: [128, 128]
       # activation function
       activation: tanh
       # learning rate
-      lr: 0.00003
+      lr: 0.00005
 
 ShadowHandCatchOver2UnderarmSafeFinger:
   # training configurations
