@@ -31,15 +31,15 @@ defaults:
   # algorithm configurations
   algo_cfgs:
     # number of steps to update the policy
-    steps_per_epoch: 4096
+    steps_per_epoch: 8192
     # number of iterations to update the policy
-    update_iters: 5
+    update_iters: 10
     # batch size for each iteration
-    batch_size: 128
+    batch_size: 256
     # target kl divergence
-    target_kl: 0.1
+    target_kl: 0.02
     # entropy coefficient
-    entropy_coef: 0.05
+    entropy_coef: 0.01
     # normalize reward
     reward_normalize: False
     # normalize cost
@@ -124,7 +124,7 @@ defaults:
     # actor network configurations
     actor:
       # hidden layer sizes
-      hidden_sizes: [64, 64]
+      hidden_sizes: [256, 256]
       # activation function
       activation: tanh
       # out_activation: tanh
@@ -132,7 +132,7 @@ defaults:
       lr: 0.00005
     critic:
       # hidden layer sizes
-      hidden_sizes: [128, 128]
+      hidden_sizes: [256, 256]
       # activation function
       activation: tanh
       # learning rate
