@@ -37,9 +37,9 @@ defaults:
     # batch size for each iteration
     batch_size: 1024
     # target kl divergence
-    target_kl: 0.02
+    target_kl: 0.05
     # entropy coefficient
-    entropy_coef: 0.005
+    entropy_coef: 0.01
     # normalize reward
     reward_normalize: False
     # normalize cost

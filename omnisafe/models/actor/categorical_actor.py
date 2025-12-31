@@ -40,7 +40,7 @@ class CategoricalActor(nn.Module):
         self._act_dim = num_bins
         self.num_bins = num_bins
         self.device = device
-        input_dim = 4 + 5 + 3 # global features + bin features + item features 
+        input_dim = 4 + 5 + 3 + 5 # global features + bin features + item features + bin context features
         self.score_nn = nn.Sequential(
             nn.Linear(input_dim, hidden_sizes[0]),
             nn.ReLU(),
@@ -67,10 +67,13 @@ class CategoricalActor(nn.Module):
         # Parse mask
         mask, bin_features, item_features, global_features = obs_processor(obs, self.num_bins)
         mask = mask.bool()
+        mask_f= mask.float()
         
         item_rep = item_features.unsqueeze(1).expand(batch_size, self.num_bins, -1)
         global_rep = global_features.unsqueeze(1).expand(batch_size, self.num_bins, -1)
-        cat_features = torch.cat([bin_features, item_rep, global_rep], dim=-1)
+        bin_context = (bin_features * mask_f.unsqueeze(-1)).sum(dim=1) / mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
+        bin_context_rep = bin_context.unsqueeze(1).expand(batch_size, self.num_bins, -1)
+        cat_features = torch.cat([bin_features, item_rep, global_rep, bin_context_rep], dim=-1)
         # Compute logits
         raw_score = self.score_nn(cat_features).squeeze(-1)  # (batch_size, num_bins)
         # Apply mask
