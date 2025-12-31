@@ -125,7 +125,6 @@ class BSCritic(nn.Module):
     ) -> None:
         super().__init__()
         
-        self.num_bins = num_bins
         self.device = device
         
         # Critic-specific layers
