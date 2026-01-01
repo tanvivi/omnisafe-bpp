@@ -65,7 +65,7 @@ defaults:
     # lambda for cost gae
     lam_c: 0.95
     # clip ratio
-    clip: 0.2
+    clip: 0.1
     # advantage estimation method, options: gae, retrace
     adv_estimation_method: gae
     # standardize reward advantage

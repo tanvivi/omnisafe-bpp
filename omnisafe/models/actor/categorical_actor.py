@@ -43,18 +43,26 @@ class CategoricalActor(nn.Module):
         self.bin_state_dim = bin_state_dim
         self.item_feature_dim = 3
         self.global_feature_dim = 4
-        input_dim = self.global_feature_dim + self.bin_state_dim  + self.item_feature_dim + self.bin_state_dim  # global features + bin features + item features + bin context features
+        input_dim =  self.bin_state_dim  + self.item_feature_dim  # global features + bin features + item features + bin context features
         self.score_nn = nn.Sequential(
             nn.Linear(input_dim, hidden_sizes[0]),
+            nn.LayerNorm(hidden_sizes[0]),  # 归一化帮助学习 / Normalization helps learning
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_sizes[0], hidden_sizes[1]),
+            nn.LayerNorm(hidden_sizes[1]),
             nn.ReLU(),
             nn.Linear(hidden_sizes[1], 1)
         )
         
         self._current_dist = None
         self._after_inference = False
-        
+        # 初始化 Actor 的最后一层
+        last_layer = self.score_nn[-1]
+        nn.init.constant_(last_layer.bias, 0.0)
+        nn.init.orthogonal_(last_layer.weight, gain=0.01) # 权重极小
+
+                
     def _distribution(self, obs: torch.Tensor):
         if not isinstance(obs, torch.Tensor):
             obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
@@ -76,9 +84,21 @@ class CategoricalActor(nn.Module):
         global_rep = global_features.unsqueeze(1).expand(batch_size, self.num_bins, -1)
         bin_context = (bin_features * mask_f.unsqueeze(-1)).sum(dim=1) / mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
         bin_context_rep = bin_context.unsqueeze(1).expand(batch_size, self.num_bins, -1)
-        cat_features = torch.cat([bin_features, item_rep, global_rep, bin_context_rep], dim=-1)
+        cat_features = torch.cat([bin_features, item_rep], dim=-1)
         # Compute logits
         raw_score = self.score_nn(cat_features).squeeze(-1)  # (batch_size, num_bins)
+        import random
+        if random.random() < 0.001:
+            print("\n"+"="*20)
+            delta_feat = bin_features[0, :, -1] 
+            print(f"input obs :{cat_features}")
+            print(f"📊 Input Delta Feature (Raw): {delta_feat.detach().cpu().numpy()}")
+            if torch.all(delta_feat == 0):
+                print("⚠️ 警告: Delta 特征全为 0！特征提取可能失效！")
+            current_logits = raw_score[0].detach().cpu().numpy()
+            print(f"🧠 Output Logits: {current_logits}")
+            print(f"   -> Max - Min Diff: {current_logits.max() - current_logits.min():.4f}")
+            print("="*20 + "\n")    
         # Apply mask
         if mask is not None:
             bool_mask = ~mask
@@ -138,26 +158,33 @@ class BSCritic(nn.Module):
         self.bin_state_dim = bin_state_dim
         self.item_feature_dim = 3 # L,W,H
         self.global_feature_dim = 4 # util_std, util_mean, itemcnt_std, itemcnt_mean
-        self.input_dim = self.bin_state_dim + self.item_feature_dim + self.global_feature_dim  # bin features + item features + global features
+        self.input_dim = self.bin_state_dim + self.item_feature_dim  # bin features + item features + global features
         
         # 1. Shared Encoder (特征提取器)
         # 作用：把每个 Bin 的原始数据映射为高维语义向量
         self.encoder = nn.Sequential(
             nn.Linear(self.input_dim, hidden_sizes[0]),
+            nn.LayerNorm(hidden_sizes[0]),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_sizes[0], hidden_sizes[1]),
+            nn.LayerNorm(hidden_sizes[1]),
             nn.ReLU()
         )
         
         # 2. Value Head (评分器)
         # 输入：Pooling 后的特征 (hidden_dim) + 显式的 Global 特征 (4)
         # 建议把 global features 再次拼接触入，强化 Critic 对 Load Balance 的感知
+        pooled_dim = hidden_sizes[1] * 3
+        
+        # Value head
         self.value_head = nn.Sequential(
-            nn.Linear(hidden_sizes[1] + 4, hidden_sizes[1]), 
+            nn.Linear(pooled_dim + self.global_feature_dim, hidden_sizes[1]),
             nn.ReLU(),
-            nn.Linear(hidden_sizes[1], 1) # 输出 V(s)
+            nn.Linear(hidden_sizes[1], 1)
         )
-
+        nn.init.uniform_(self.value_head[-1].weight, -0.01, 0.01)
+        nn.init.constant_(self.value_head[-1].bias, 0.0)
         
     def forward(self, obs: Union[np.ndarray, torch.Tensor], **kwargs) -> torch.Tensor:
         if not isinstance(obs, torch.Tensor):
@@ -175,7 +202,7 @@ class BSCritic(nn.Module):
         # 2. 特征扩展与拼接 (与 Actor 一样)
         item_rep = item_feats.unsqueeze(1).expand(batch_size, N, -1)
         global_rep = global_feats.unsqueeze(1).expand(batch_size, N, -1)
-        cat_feats = torch.cat([bin_feats, item_rep, global_rep], dim=-1) # [Batch, N, 12]
+        cat_feats = torch.cat([bin_feats, item_rep], dim=-1) # [Batch, N, 12]
         
         # 3. Parameter Sharing Encoding
         # [Batch, N, 12] -> [Batch, N, Hidden]
@@ -194,7 +221,8 @@ class BSCritic(nn.Module):
         # 求和
         sum_embeddings = masked_embeddings.sum(dim=1) # [Batch, Hidden]
         # 计算有效的 Bin 数量 (防止除以 0)
-        valid_counts = mask_expanded.sum(dim=1).clamp(min=1.0)
+        raw_counts = mask_expanded.sum(dim=1)
+        valid_counts = raw_counts.clamp(min=1.0)
         # 求平均
         pooled_embedding = sum_embeddings / valid_counts
         
@@ -202,13 +230,24 @@ class BSCritic(nn.Module):
         # fill_value = -1e9
         # masked_embeddings = bin_embeddings.masked_fill(mask_expanded == 0, fill_value)
         # pooled_embedding = masked_embeddings.max(dim=1)[0]
+        masked_embeddings = bin_embeddings.clone()
+        masked_embeddings[~mask.bool()] = -20.0  # 将无效 bin 设为极小值 / Set invalid bins to very small
+        max_pool = masked_embeddings.max(dim=1)[0]  # [B, hidden]
+        is_all_empty = (raw_counts == 0) # [Batch, 1]
+
+        max_pool = torch.where(is_all_empty, torch.zeros_like(max_pool), max_pool)
+        squared_diff = (bin_embeddings - pooled_embedding.unsqueeze(1)) ** 2
+        masked_squared_diff = squared_diff * mask_expanded
+        variance = masked_squared_diff.sum(dim=1) / valid_counts
+        std_pool = torch.sqrt(variance + 1e-8)  # [B, hidden]
         
-        # 5. 再次拼接 Global Features (强化整体感知)
-        # Critic 的核心任务是评估“局面好不好”，Load Balance 指标(std/mean)是决定性因素
-        # 所以我们将 pooled_embedding 和 global_feats 拼在一起
-        final_input = torch.cat([pooled_embedding, global_feats], dim=-1)
+        # 拼接三种池化结果 / Concatenate three pooling results
+        pooled = torch.cat([pooled_embedding, max_pool, std_pool], dim=-1)  # [B, 3*hidden]
         
-        # 6. 计算 Value
-        state_value = self.value_head(final_input) # [Batch, 1]
+        # 加入全局特征 / Add global features
+        final_input = torch.cat([pooled, global_feats], dim=-1)
+        
+        # 输出 Value / Output Value
+        state_value = self.value_head(final_input)  # [B, 1]
         
         return state_value
