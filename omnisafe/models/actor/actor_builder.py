@@ -46,6 +46,7 @@ class ActorBuilder:
         hidden_sizes: list[int],
         activation: Activation = 'relu',
         weight_initialization_mode: InitFunction = 'kaiming_uniform',
+        bin_state_dim: int = 6,
         **kwargs, # for additional parameters
     ) -> None:
         """Initialize an instance of :class:`ActorBuilder`."""
@@ -54,6 +55,8 @@ class ActorBuilder:
         self._weight_initialization_mode: InitFunction = weight_initialization_mode
         self._activation: Activation = activation
         self._hidden_sizes: list[int] = hidden_sizes
+        self._bin_state_dim = bin_state_dim
+        print(f"ActorBuilder: bin_state_dim={bin_state_dim}")
         self._kwargs = kwargs
 
     # pylint: disable-next=too-many-return-statements
@@ -84,7 +87,7 @@ class ActorBuilder:
                 self._hidden_sizes,
                 activation=self._activation,
                 weight_initialization_mode=self._weight_initialization_mode,
-                bin_state_dim=self._kwargs.get('bin_state_dim', 5),
+                bin_state_dim=self._bin_state_dim,
                 num_bins=self._act_space.n,
                 device=self._kwargs.get('device','cuda:0')
             )

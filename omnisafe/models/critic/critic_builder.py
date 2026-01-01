@@ -56,6 +56,7 @@ class CriticBuilder:
         weight_initialization_mode: InitFunction = 'kaiming_uniform',
         num_critics: int = 1,
         use_obs_encoder: bool = False,
+        bin_state_dim: int = 6,
         **kwargs, # for additional parameters
     ) -> None:
         """Initialize an instance of :class:`CriticBuilder`."""
@@ -66,6 +67,7 @@ class CriticBuilder:
         self._hidden_sizes: list[int] = hidden_sizes
         self._num_critics: int = num_critics
         self._use_obs_encoder: bool = use_obs_encoder
+        self._bin_state_dim = bin_state_dim
         self._kwargs = kwargs
 
     def build_critic(
@@ -114,7 +116,7 @@ class CriticBuilder:
                 weight_initialization_mode=self._weight_initialization_mode,
                 num_critics=self._num_critics,
                 # item_dim=self._kwargs.get('item_dim', 3),
-                bin_state_dim=self._kwargs.get('bin_state_dim', 5),
+                bin_state_dim=self._bin_state_dim,
                 num_bins=self._act_space.n,
                 device=self._kwargs.get('device','cuda:0')
             )

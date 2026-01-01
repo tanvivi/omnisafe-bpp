@@ -129,6 +129,8 @@ class PolicyGradient(BaseAlgo):
             num_envs=self._cfgs.train_cfgs.vector_env_nums,
             device=self._device,
         )
+        self.diagnostics = OmniSafeDiagnostics(enable=True,
+        log_freq=10)
 
     def _init_log(self) -> None:
         """Log info about epoch.
@@ -272,7 +274,7 @@ class PolicyGradient(BaseAlgo):
             self._logger.store({'Time/Rollout': time.time() - rollout_time})
 
             update_time = time.time()
-            self._update()
+            self._update(epoch)
             self._logger.store({'Time/Update': time.time() - update_time})
 
             if self._cfgs.model_cfgs.exploration_noise_anneal:
@@ -312,7 +314,7 @@ class PolicyGradient(BaseAlgo):
 
         return ep_ret, ep_cost, ep_len
 
-    def _update(self) -> None:
+    def _update(self, epoch) -> None:
         """Update actor, critic.
 
         -  Get the ``data`` from buffer
@@ -354,6 +356,16 @@ class PolicyGradient(BaseAlgo):
         print(f"Target_value_r: mean={data['target_value_r'].mean():.3f}, range=[{data['target_value_r'].min():.3f}, {data['target_value_r'].max():.3f}]")
         print(f"Adv_r: mean={data['adv_r'].mean():.3f}, std={data['adv_r'].std():.3f}")
         print(f"Obs shape: {data['obs'].shape}, Act shape: {data['act'].shape}")
+        current_epoch = epoch
+        if self.diagnostics.should_diagnose(current_epoch):
+            self.diagnostics.diagnose_buffer_data(data, self._logger)
+            self.diagnostics.diagnose_policy_before_update(
+                self._actor_critic,
+                data['obs'][:512],
+                data['act'][:512],
+                data['adv_r'][:512],
+                sample_size=128
+            )
         obs, act, logp, target_value_r, target_value_c, adv_r, adv_c = (
             data['obs'],
             data['act'],
@@ -763,3 +775,319 @@ class PolicyGradient(BaseAlgo):
             },
         )
         return loss
+
+class OmniSafeDiagnostics:
+    """
+    适配OmniSafe框架的诊断工具
+    Diagnostic tool adapted for OmniSafe framework
+    """
+    
+    def __init__(self, enable=True, log_freq=100):
+        self.enable = enable
+        self.log_freq = log_freq
+        self.step_count = 0
+        
+    def should_diagnose(self, epoch: int) -> bool:
+        """判断是否应该进行诊断 / Check if should diagnose"""
+        return self.enable and (epoch % self.log_freq == 0)
+    
+    def diagnose_buffer_data(self, data: dict, logger) -> None:
+        """
+        诊断buffer中的数据质量
+        Diagnose data quality in buffer
+        
+        在 _update() 开始时调用
+        Call at the beginning of _update()
+        """
+        print("\n" + "="*80)
+        print("📊 Buffer数据诊断 / Buffer Data Diagnosis")
+        print("="*80)
+        
+        obs = data['obs']
+        act = data['act']
+        adv_r = data['adv_r']
+        target_value_r = data['target_value_r']
+        rewards = data.get('reward', None)
+        
+        # 1. 奖励统计 / Reward statistics
+        if rewards is not None:
+            print(f"\n奖励分布 / Reward distribution:")
+            print(f"  Mean: {rewards.mean():.4f}")
+            print(f"  Std: {rewards.std():.4f}")
+            print(f"  Range: [{rewards.min():.4f}, {rewards.max():.4f}]")
+            print(f"  非零比例 / Non-zero ratio: {(rewards != 0).sum().item() / rewards.numel():.2%}")
+        
+        # 2. Advantage统计 / Advantage statistics
+        print(f"\nAdvantage分布 / Advantage distribution:")
+        print(f"  Mean: {adv_r.mean():.4f}")
+        print(f"  Std: {adv_r.std():.4f}")
+        print(f"  Range: [{adv_r.min():.4f}, {adv_r.max():.4f}]")
+        
+        if adv_r.std() < 0.1:
+            print("  ⚠️  警告：Advantage方差太小！")
+            print("  ⚠️  Warning: Advantage variance too small!")
+        
+        # 3. Value target统计 / Value target statistics
+        print(f"\nValue Target统计 / Value Target statistics:")
+        print(f"  Mean: {target_value_r.mean():.4f}")
+        print(f"  Std: {target_value_r.std():.4f}")
+        print(f"  Range: [{target_value_r.min():.4f}, {target_value_r.max():.4f}]")
+        
+        # 4. 动作分布 / Action distribution
+        print(f"\n动作分布 / Action distribution:")
+        unique_actions, counts = torch.unique(act, return_counts=True)
+        for action, count in zip(unique_actions, counts):
+            print(f"  Action {action.item()}: {count.item()} ({count.item()/act.numel():.2%})")
+        
+        # 判断动作是否过于集中 / Check if actions are too concentrated
+        max_ratio = counts.max().float() / act.numel()
+        if max_ratio > 0.8:
+            print(f"  ⚠️  警告：动作分布过于集中！最高频率={max_ratio:.2%}")
+            print(f"  ⚠️  Warning: Action distribution too concentrated! Max freq={max_ratio:.2%}")
+    
+    def diagnose_policy_before_update(
+        self, 
+        actor_critic, 
+        obs: torch.Tensor,
+        act: torch.Tensor,
+        adv_r: torch.Tensor,
+        sample_size: int = 128
+    ) -> dict:
+        """
+        在更新前诊断策略状态
+        Diagnose policy state before update
+        
+        在 _update() 中，actor更新之前调用
+        Call in _update() before actor update
+        """
+        print("\n" + "="*80)
+        print("🔍 策略更新前诊断 / Pre-Update Policy Diagnosis")
+        print("="*80)
+        
+        with torch.no_grad():
+            # 采样一小部分数据进行分析 / Sample a subset for analysis
+            indices = torch.randperm(obs.size(0))[:sample_size]
+            obs_sample = obs[indices]
+            act_sample = act[indices]
+            adv_sample = adv_r[indices]
+            
+            # 获取当前策略分布 / Get current policy distribution
+            distribution = actor_critic.actor(obs_sample)
+            logits = distribution.logits if hasattr(distribution, 'logits') else None
+            probs = distribution.probs if hasattr(distribution, 'probs') else None
+            entropy = distribution.entropy()
+            
+            # 获取value估计 / Get value estimates
+            values = actor_critic.reward_critic(obs_sample)[0]
+            
+            print(f"\n采样大小 / Sample size: {sample_size}")
+            
+            # 1. Logits分析 / Logits analysis
+            if logits is not None:
+                print(f"\nLogits统计 / Logits statistics:")
+                print(f"  Mean: {logits.mean():.4f}")
+                print(f"  Std: {logits.std():.4f}")
+                print(f"  Range: [{logits.min():.4f}, {logits.max():.4f}]")
+                
+                # 计算logits区分度 / Calculate logits discrimination
+                logit_diffs = []
+                for i in range(min(10, logits.size(0))):  # 只看前10个样本
+                    diff = logits[i].max() - logits[i].min()
+                    logit_diffs.append(diff.item())
+                
+                avg_diff = sum(logit_diffs) / len(logit_diffs)
+                print(f"  平均Logits差异 / Avg logits difference: {avg_diff:.4f}")
+                
+                if avg_diff < 0.5:
+                    print("  🚨 严重：Logits差异极小！策略几乎随机")
+                    print("  🚨 CRITICAL: Logits difference tiny! Policy nearly random")
+                elif avg_diff < 2.0:
+                    print("  ⚠️  警告：Logits差异较小，特征可能不够强")
+                    print("  ⚠️  Warning: Logits difference small, features may be weak")
+                else:
+                    print("  ✅ Logits差异合理")
+                    print("  ✅ Logits difference reasonable")
+            
+            # 2. 概率分布分析 / Probability distribution analysis
+            if probs is not None:
+                print(f"\n概率分布统计 / Probability distribution:")
+                print(f"  最大概率均值 / Max prob mean: {probs.max(dim=-1)[0].mean():.4f}")
+                print(f"  最小概率均值 / Min prob mean: {probs.min(dim=-1)[0].mean():.4f}")
+            
+            # 3. 熵分析 / Entropy analysis
+            print(f"\n熵统计 / Entropy statistics:")
+            print(f"  Mean: {entropy.mean():.4f}")
+            print(f"  Std: {entropy.std():.4f}")
+            
+            # 计算理论最大熵 / Calculate theoretical max entropy
+            num_actions = logits.size(-1) if logits is not None else probs.size(-1)
+            max_entropy = torch.log(torch.tensor(float(num_actions)))
+            normalized_entropy = entropy.mean() / max_entropy
+            print(f"  归一化熵 / Normalized entropy: {normalized_entropy:.4f}")
+            
+            if normalized_entropy > 0.9:
+                print("  ⚠️  警告：熵接近最大值，策略接近均匀分布")
+                print("  ⚠️  Warning: Entropy close to max, policy nearly uniform")
+            
+            # 4. 同一obs下不同action的对比 / Compare different actions for same obs
+            print(f"\n动作-Advantage对比分析 / Action-Advantage comparison:")
+            self._analyze_action_advantage_correlation(
+                obs_sample[:20], act_sample[:20], adv_sample[:20], 
+                probs[:20] if probs is not None else None
+            )
+            
+            # 5. Value估计质量 / Value estimation quality
+            print(f"\nValue估计 / Value estimates:")
+            print(f"  Mean: {values.mean():.4f}")
+            print(f"  Std: {values.std():.4f}")
+            
+            return {
+                'logit_diff': avg_diff if logits is not None else None,
+                'entropy': entropy.mean().item(),
+                'normalized_entropy': normalized_entropy.item(),
+            }
+    
+    def _analyze_action_advantage_correlation(
+        self, 
+        obs: torch.Tensor, 
+        act: torch.Tensor, 
+        adv: torch.Tensor,
+        probs: torch.Tensor = None
+    ):
+        """
+        分析动作和advantage的相关性
+        Analyze correlation between actions and advantages
+        """
+        print("\n  前5个样本的详细信息 / Details for first 5 samples:")
+        for i in range(20):
+            print(f"\n  样本 {i+1} / Sample {i+1}:")
+            print(f"    Advantage mean: {adv.mean():.4f}, std: {adv.std():.4f}")
+            print(f"    选择的动作 / Selected action: {act[i].item()}")
+            print(f"    Advantage: {adv[i].item():.4f}")
+            
+            if probs is not None:
+                print(f"    各动作概率 / Action probabilities:")
+                for j in range(probs.size(-1)):
+                    marker = " ← 选中" if j == act[i].item() else ""
+                    print(f"      Action {j}: {probs[i, j].item():.4f}{marker}")
+    
+    def diagnose_update_dynamics(
+        self,
+        old_logp: torch.Tensor,
+        new_logp: torch.Tensor,
+        ratio: torch.Tensor,
+        adv: torch.Tensor,
+        loss: torch.Tensor,
+    ):
+        """
+        诊断更新动态
+        Diagnose update dynamics
+        
+        在 _loss_pi() 中调用
+        Call in _loss_pi()
+        """
+        print("\n" + "="*80)
+        print("📈 更新动态诊断 / Update Dynamics Diagnosis")
+        print("="*80)
+        
+        print(f"\nPolicy Ratio统计 / Policy Ratio statistics:")
+        print(f"  Mean: {ratio.mean():.4f}")
+        print(f"  Std: {ratio.std():.4f}")
+        print(f"  Range: [{ratio.min():.4f}, {ratio.max():.4f}]")
+        
+        # 检查ratio是否过大 / Check if ratio is too large
+        if ratio.max() > 3.0 or ratio.min() < 0.33:
+            print("  ⚠️  警告：Ratio范围过大，可能需要调整学习率或clip")
+            print("  ⚠️  Warning: Ratio range too large, may need to adjust LR or clip")
+        
+        print(f"\nLoss信息 / Loss info:")
+        print(f"  Loss value: {loss.item():.4f}")
+        
+        # 检查loss和advantage的关系 / Check relationship between loss and advantage
+        print(f"\nAdvantage统计（用于更新）/ Advantage statistics (for update):")
+        print(f"  Mean: {adv.mean():.4f}")
+        print(f"  Std: {adv.std():.4f}")
+        
+        # 计算加权advantage / Calculate weighted advantage
+        weighted_adv = (ratio * adv).mean()
+        print(f"  加权Advantage / Weighted advantage: {weighted_adv:.4f}")
+
+
+# 集成到PolicyGradient类中 / Integration into PolicyGradient class
+def integrate_diagnostics_into_pg(pg_instance):
+    """
+    将诊断功能集成到PolicyGradient实例中
+    Integrate diagnostics into PolicyGradient instance
+    
+    使用方法 / Usage:
+        在 __init__ 中调用 / Call in __init__:
+        integrate_diagnostics_into_pg(self)
+    """
+    # 添加诊断器 / Add diagnostics
+    pg_instance.diagnostics = OmniSafeDiagnostics(
+        enable=True,  # 可以从config读取 / Can read from config
+        log_freq=10   # 每10个epoch诊断一次 / Diagnose every 10 epochs
+    )
+    
+    # 保存原始方法 / Save original methods
+    pg_instance._original_update = pg_instance._update
+    pg_instance._original_loss_pi = pg_instance._loss_pi
+    
+    # 包装_update方法 / Wrap _update method
+    def _update_with_diagnostics(self):
+        data = self._buf.get()
+        
+        # 诊断buffer数据 / Diagnose buffer data
+        if self.diagnostics.should_diagnose(self._logger.get_stats('Train/Epoch')[0]):
+            self.diagnostics.diagnose_buffer_data(data, self._logger)
+            
+            # 诊断策略状态 / Diagnose policy state
+            self.diagnostics.diagnose_policy_before_update(
+                self._actor_critic,
+                data['obs'][:512],  # 采样512个 / Sample 512
+                data['act'][:512],
+                data['adv_r'][:512],
+                sample_size=128
+            )
+        
+        # 调用原始更新 / Call original update
+        self._original_update()
+    
+    # 包装_loss_pi方法 / Wrap _loss_pi method
+    def _loss_pi_with_diagnostics(self, obs, act, logp, adv):
+        distribution = self._actor_critic.actor(obs)
+        logp_ = self._actor_critic.actor.log_prob(act)
+        ratio = torch.exp(logp_ - logp)
+        loss = -(ratio * adv).mean()
+        entropy = distribution.entropy().mean().item()
+        
+        # 诊断更新动态（只在特定epoch）/ Diagnose update dynamics (only certain epochs)
+        if self.diagnostics.should_diagnose(self._logger.get_stats('Train/Epoch')[0]):
+            with torch.no_grad():
+                # 采样一小部分进行诊断 / Sample subset for diagnosis
+                sample_size = min(128, obs.size(0))
+                indices = torch.randperm(obs.size(0))[:sample_size]
+                self.diagnostics.diagnose_update_dynamics(
+                    logp[indices],
+                    logp_[indices],
+                    ratio[indices],
+                    adv[indices],
+                    loss,
+                )
+        
+        if self._cfgs.model_cfgs.actor_type == 'gaussian_learning' and hasattr(self._actor_critic.actor, 'std'):
+            std = self._actor_critic.actor.std
+            self._logger.store({'Train/PolicyStd': std})
+        
+        self._logger.store({
+            'Train/Entropy': entropy,
+            'Train/PolicyRatio': ratio,
+            'Loss/Loss_pi': loss.mean().item(),
+        })
+        
+        return loss
+    
+    # 替换方法 / Replace methods
+    import types
+    pg_instance._update = types.MethodType(_update_with_diagnostics, pg_instance)
+    pg_instance._loss_pi = types.MethodType(_loss_pi_with_diagnostics, pg_instance)

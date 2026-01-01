@@ -4,15 +4,15 @@ import numpy as np
 from torch.distributions import Categorical
 from typing import Any, Tuple, Union, Sequence
 
-def obs_processor(obs, num_bins):
+def obs_processor(obs, num_bins, bin_feature_dim=5):
     """convert flat observation to structured format
     current obs is [mask, bin_features, item_features, global_features]
     mask: (num_bins,)
     bin_features: (num_bins, 5)"""
     mask = obs[:, :num_bins]
     bin_start = num_bins
-    bin_end = num_bins + num_bins * 5
-    bin_features = obs[:, bin_start:bin_end].reshape(-1, num_bins, 5)
+    bin_end = num_bins + num_bins * bin_feature_dim
+    bin_features = obs[:, bin_start:bin_end].reshape(-1, num_bins, bin_feature_dim)
     item_start = bin_end
     item_end = bin_end + 3
     item_features = obs[:, item_start:item_end]
@@ -30,7 +30,7 @@ class CategoricalActor(nn.Module):
         activation: str = 'relu',
         weight_initialization_mode: str = 'kaiming_uniform',
         num_bins: int = 5,
-        bin_feature_dim: int = 5,
+        bin_state_dim: int = 6,
         bin_size: list = [10, 10, 10],
         device: Union[str, int, torch.device] = "cuda:0",
         **kwargs
@@ -40,7 +40,10 @@ class CategoricalActor(nn.Module):
         self._act_dim = num_bins
         self.num_bins = num_bins
         self.device = device
-        input_dim = 4 + 5 + 3 + 5 # global features + bin features + item features + bin context features
+        self.bin_state_dim = bin_state_dim
+        self.item_feature_dim = 3
+        self.global_feature_dim = 4
+        input_dim = self.global_feature_dim + self.bin_state_dim  + self.item_feature_dim + self.bin_state_dim  # global features + bin features + item features + bin context features
         self.score_nn = nn.Sequential(
             nn.Linear(input_dim, hidden_sizes[0]),
             nn.ReLU(),
@@ -65,7 +68,7 @@ class CategoricalActor(nn.Module):
         batch_size = obs.shape[0]
         
         # Parse mask
-        mask, bin_features, item_features, global_features = obs_processor(obs, self.num_bins)
+        mask, bin_features, item_features, global_features = obs_processor(obs, self.num_bins, self.bin_state_dim)
         mask = mask.bool()
         mask_f= mask.float()
         
@@ -122,7 +125,7 @@ class BSCritic(nn.Module):
         activation: str = 'relu',
         weight_initialization_mode: str = 'kaiming_uniform',
         num_bins: int = 5,
-        bin_feature_dim: int = 5,
+        bin_state_dim: int = 5,
         device: Union[str, int, torch.device] = "cuda:0",
         **kwargs
     ) -> None:
@@ -132,7 +135,10 @@ class BSCritic(nn.Module):
         
         # Critic-specific layers
         self.num_bins = num_bins
-        self.input_dim = 12
+        self.bin_state_dim = bin_state_dim
+        self.item_feature_dim = 3 # L,W,H
+        self.global_feature_dim = 4 # util_std, util_mean, itemcnt_std, itemcnt_mean
+        self.input_dim = self.bin_state_dim + self.item_feature_dim + self.global_feature_dim  # bin features + item features + global features
         
         # 1. Shared Encoder (特征提取器)
         # 作用：把每个 Bin 的原始数据映射为高维语义向量
@@ -162,7 +168,7 @@ class BSCritic(nn.Module):
             obs = obs.to(device)
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
-        mask, bin_feats, item_feats, global_feats = obs_processor(obs, self.num_bins)
+        mask, bin_feats, item_feats, global_feats = obs_processor(obs, self.num_bins, self.bin_state_dim)
         batch_size = obs.shape[0]
         N = self.num_bins
         
