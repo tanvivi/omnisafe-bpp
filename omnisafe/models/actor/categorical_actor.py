@@ -46,11 +46,11 @@ class CategoricalActor(nn.Module):
         input_dim =  self.bin_state_dim  + self.item_feature_dim  # global features + bin features + item features + bin context features
         self.score_nn = nn.Sequential(
             nn.Linear(input_dim, hidden_sizes[0]),
-            nn.LayerNorm(hidden_sizes[0]),  # 归一化帮助学习 / Normalization helps learning
+            # nn.LayerNorm(hidden_sizes[0]),  # 归一化帮助学习 / Normalization helps learning
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_sizes[0], hidden_sizes[1]),
-            nn.LayerNorm(hidden_sizes[1]),
+            # nn.LayerNorm(hidden_sizes[1]),
             nn.ReLU(),
             nn.Linear(hidden_sizes[1], 1)
         )
@@ -60,7 +60,7 @@ class CategoricalActor(nn.Module):
         # 初始化 Actor 的最后一层
         last_layer = self.score_nn[-1]
         nn.init.constant_(last_layer.bias, 0.0)
-        nn.init.orthogonal_(last_layer.weight, gain=0.01) # 权重极小
+        nn.init.orthogonal_(last_layer.weight, gain=0.1) # 权重极小
 
                 
     def _distribution(self, obs: torch.Tensor):
@@ -183,7 +183,7 @@ class BSCritic(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_sizes[1], 1)
         )
-        nn.init.uniform_(self.value_head[-1].weight, -0.01, 0.01)
+        nn.init.orthogonal_(self.value_head[-1].weight, gain=1.0)
         nn.init.constant_(self.value_head[-1].bias, 0.0)
         
     def forward(self, obs: Union[np.ndarray, torch.Tensor], **kwargs) -> torch.Tensor:
