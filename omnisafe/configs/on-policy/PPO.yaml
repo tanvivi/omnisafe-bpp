@@ -35,7 +35,7 @@ defaults:
     # number of iterations to update the policy
     update_iters: 10
     # batch size for each iteration
-    batch_size: 1024
+    batch_size: 2048
     # target kl divergence
     target_kl: 0.05
     # entropy coefficient
@@ -129,7 +129,7 @@ defaults:
       activation: tanh
       # out_activation: tanh
       # learning rate
-      lr: 0.00005
+      lr: 0.00001
     critic:
       # hidden layer sizes
       hidden_sizes: [128, 128]
