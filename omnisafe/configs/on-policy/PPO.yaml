@@ -96,7 +96,7 @@ defaults:
   model_cfgs:
     device: cuda:0 # for device setting, only set here works
     # bin_state_dim
-    bin_state_dim: 6
+    bin_state_dim: 5
     # bin size
     bin_size: [10, 10, 10]
     # embedding size
