@@ -65,9 +65,9 @@ class CategoricalActor(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_sizes[1] // 2, 1)
         ) # bilinear 
-        
-        self.log_temp = nn.Parameter(torch.tensor(-1.0)) # use smaller temp for initial exploration try -1, 0.3
-        self.apply(self._init_weights) 
+        # TODO change to 0.0 later DONE
+        self.log_temp = nn.Parameter(torch.tensor(0.0)) # use smaller temp for initial exploration try -1, 0.3
+        self._init_weights()
         for module in [self.bin_encoder[-1], self.item_encoder[-1]]:
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=1.0)
@@ -75,12 +75,47 @@ class CategoricalActor(nn.Module):
         self._current_dist = None
         self._after_inference = False
 
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-        # 1. 对于前面的层 (后面接 ReLU 的): 使用 gain=sqrt(2)
-        # 这有助于保持信号经过 ReLU 后的方差
-            nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-            nn.init.constant_(m.bias, 0.0)
+    def _init_weights(self):
+        """
+        专门针对 Cosine Similarity 架构的初始化策略
+        """
+        # 1. 第一轮遍历：通用初始化 (针对所有中间层)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 正交初始化有助于保持特征的独立性
+                # gain=sqrt(2) 是为了配合 ReLU
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+            
+            elif isinstance(m, nn.LayerNorm):
+                # LayerNorm 标准初始化
+                nn.init.constant_(m.bias, 0.0)
+                nn.init.constant_(m.weight, 1.0)
+
+        # 2. 第二轮遍历：修正输出层 (Embedding Heads)
+        # 这一步至关重要！覆盖掉上面的通用初始化
+        for encoder in [self.bin_encoder, self.item_encoder]:
+            # 获取该 encoder 的最后一层 (假设是 Sequential)
+            # 注意：如果你的 Encoder 结尾是 LayerNorm，请往前回溯找到最后一个 Linear
+            last_module = list(encoder.modules())[-1] 
+            
+            # 如果结尾是 Sequential，我们要找里面的最后一个 Linear
+            if not isinstance(last_module, nn.Linear):
+                for sub_m in reversed(list(encoder.modules())):
+                    if isinstance(sub_m, nn.Linear):
+                        last_module = sub_m
+                        break
+            
+            # 对 Embedding 输出层进行重置
+            if isinstance(last_module, nn.Linear):
+                print(f"Re-initializing output layer: {last_module}")
+                # Gain = 1.0 (因为后面没有 ReLU，直接进 Normalize)
+                nn.init.orthogonal_(last_module.weight, gain=1.0)
+                # Bias = 0.0 (极其重要：确保向量中心在原点)
+                if last_module.bias is not None:
+                    nn.init.constant_(last_module.bias, 0.0)
+
     def _distribution(self, obs: torch.Tensor):
         if not isinstance(obs, torch.Tensor):
             obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
@@ -106,18 +141,20 @@ class CategoricalActor(nn.Module):
         bin_embeddings = F.normalize(bin_embeddings, dim=-1)
         item_embeddings = F.normalize(item_embeddings, dim=-1)
         raw_score = torch.einsum("bnd,bnd->bn", bin_embeddings, item_embeddings)
-        temp = self.log_temp.exp()
+        
+        temp = torch.clamp(self.log_temp, max=2.5).exp()
         scaled_score = raw_score * temp
         
         import random
         if random.random() < 0.001:
-            print("\n"+"="*20)
+            print("="*20)
             print(f"input obs :{bin_features}")
-            print(f"embeddings { bin_embeddings}, {item_embeddings.squeeze(-1)}")
+            # print(f"embeddings { bin_embeddings}, {item_embeddings.squeeze(-1)}")
             current_logits = raw_score[0].detach().cpu().numpy()
             print(f"🧠 Output Logits: {current_logits}")
             print(f"   -> Max - Min Diff: {current_logits.max() - current_logits.min():.4f}")
-            print("="*20 + "\n")    
+            print(f"scaled score:{scaled_score[0].detach().cpu().numpy()}")
+            print("="*20)    
         # Apply mask
         if mask is not None:
             bool_mask = ~mask
@@ -206,8 +243,8 @@ class BSCritic(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_sizes[1]//2, 1)
         )
-        nn.init.orthogonal_(self.value_head[-1].weight, gain=1.0)
-        nn.init.constant_(self.value_head[-1].bias, 0.0)
+        nn.init.zeros_(self.value_head[-1].weight)
+        nn.init.constant_(self.value_head[-1].bias, 6.0) # TODO change to reward? not sure whether to change the initialization for weight
         
     def forward(self, obs: Union[np.ndarray, torch.Tensor], **kwargs) -> torch.Tensor:
         if not isinstance(obs, torch.Tensor):
@@ -235,7 +272,7 @@ class BSCritic(nn.Module):
             all_masked = (~mask).all(dim=-1, keepdim=True)
             if all_masked.any():
                 mask = mask.masked_fill(all_masked, False) # if all bins are masked, unmask all to avoid NaN
-            similarity_scores = similarity_scores.masked_fill(~mask, -20.0)  # (batch_size, num_bins)
+            similarity_scores = similarity_scores.masked_fill(~mask, -1e8)  # (batch_size, num_bins)
         attn_weights = F.softmax(similarity_scores, dim=-1)
         weighted_bin_emb = (attn_weights.unsqueeze(-1) * bin_embeddings).sum(dim=1)  # (batch_size, hidden_size)
         if all_masked is not None and all_masked.any(): # only consider global feature when all bins are masked
