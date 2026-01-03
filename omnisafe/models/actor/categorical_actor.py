@@ -47,18 +47,20 @@ class CategoricalActor(nn.Module):
         input_dim =  self.bin_state_dim  + self.item_feature_dim  # global features + bin features + item features + bin context features
         self.bin_encoder = nn.Sequential(
             nn.Linear(bin_state_dim, hidden_sizes[0]),
+            nn.LayerNorm(hidden_sizes[0]),
             nn.ReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
         self.item_encoder = nn.Sequential(
             nn.Linear(self.item_feature_dim, hidden_sizes[0]),
+            nn.LayerNorm(hidden_sizes[0]),
             nn.ReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
         self.score_nn = nn.Sequential(
             nn.Linear(hidden_sizes[1] * 2, hidden_sizes[1]),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            # nn.Dropout(0.1),
             nn.Linear(hidden_sizes[1], hidden_sizes[1] // 2),
             nn.ReLU(),
             nn.Linear(hidden_sizes[1] // 2, 1)
@@ -91,7 +93,8 @@ class CategoricalActor(nn.Module):
         item_embeddings = self.item_encoder(item_features).unsqueeze(1)  # (batch_size, hidden_size)
         item_embeddings = item_embeddings.expand(-1, self.num_bins, -1)  # (batch_size, num_bins, hidden_size)
         combined = torch.cat([bin_embeddings, item_embeddings], dim=-1)
-        raw_score = self.score_nn(combined).squeeze(-1)  # (batch_size, num_bins)
+        # raw_score = self.score_nn(combined).squeeze(-1)  # (batch_size, num_bins)
+        raw_score = torch.einsum("bnd,bnd->bn", bin_embeddings, item_embeddings)
         temp = self.log_temp.exp()
         scaled_score = raw_score * temp
         
