@@ -66,7 +66,7 @@ class CategoricalActor(nn.Module):
             nn.Linear(hidden_sizes[1] // 2, 1)
         ) # bilinear 
         
-        self.log_temp = nn.Parameter(torch.tensor(1.5)) # learnable temperature, enlarge 
+        self.log_temp = nn.Parameter(torch.tensor(0.0)) # use smaller temp for initial exploration
         
         self._current_dist = None
         self._after_inference = False
@@ -191,7 +191,7 @@ class BSCritic(nn.Module):
         
         # Value head
         self.value_head = nn.Sequential(
-            nn.Linear(2 * hidden_sizes[1] + hidden_sizes[1]//2, hidden_sizes[1]),
+            nn.Linear(hidden_sizes[1] + hidden_sizes[1]//2, hidden_sizes[1]),
             nn.ReLU(),
             nn.Linear(hidden_sizes[1], hidden_sizes[1]//2),
             nn.ReLU(),
@@ -213,28 +213,30 @@ class BSCritic(nn.Module):
         N = self.num_bins
         
         bin_embeddings = self.bin_encoder(bin_feats)  # (batch_size, num_bins, hidden_size)
-        if mask is not None:
-            mask = mask.float()                   # (B, N)
-            bin_embeddings = bin_embeddings * mask.unsqueeze(-1)
-            pooled_bin = bin_embeddings.sum(dim=1) / (mask.sum(dim=1, keepdim=True) + 1e-6)
-        else:
-            pooled_bin = bin_embeddings.mean(dim=1) 
-        item_embeddings = self.item_encoder(item_feats) # (batch_size, hidden_size)
-        # item_exp = item_embeddings.expand(-1, N, -1)  # (batch_size, num_bins, hidden_size)
+        
+        item_embeddings = self.item_encoder(item_feats).unsqueeze(1)  # (batch_size, 1, hidden_size)
+        item_exp = item_embeddings.expand(-1, N, -1)  # (batch_size, num_bins, hidden_size)
         
         global_embeddings = self.global_encoder(global_feats)  # (batch_size
         
-        # similarity_scores = self.similarity_nn(bin_embeddings, item_exp).squeeze(-1)  # (batch_size, num_bins)
+        similarity_scores = self.similarity_nn(bin_embeddings, item_exp).squeeze(-1)  # (batch_size, num_bins)
         
-        joint = torch.cat([pooled_bin, item_embeddings, global_embeddings], dim=-1)
-
         if mask is not None:
             mask = mask.bool()
-            # similarity_scores = similarity_scores.masked_fill(~mask, 0.0)  # (batch_size, num_bins)
-        # attn_weights = F.softmax(similarity_scores, dim=-1)
-        # weighted_bin_emb = (attn_weights.unsqueeze(-1) * bin_embeddings).sum(dim=1)  # (batch_size, hidden_size)
-        # combined_features = torch.cat([weighted_bin_emb, global_embeddings], dim=-1)  # (batch_size, num_bins + hidden_size//2)
+            all_masked = (~mask).all(dim=-1, keepdim=True)
+            if all_masked.any():
+                mask = mask.masked_fill(all_masked, False) # if all bins are masked, unmask all to avoid NaN
+            similarity_scores = similarity_scores.masked_fill(~mask, -20.0)  # (batch_size, num_bins)
+        attn_weights = F.softmax(similarity_scores, dim=-1)
+        weighted_bin_emb = (attn_weights.unsqueeze(-1) * bin_embeddings).sum(dim=1)  # (batch_size, hidden_size)
+        if all_masked is not None and all_masked.any(): # only consider global feature when all bins are masked
+            weighted_bin_emb = torch.where(
+                all_masked.expand(-1, weighted_bin_emb.size(-1)),
+                torch.zeros_like(weighted_bin_emb),
+                weighted_bin_emb
+            )
+            weighted_bin_emb = weighted_bin_emb.masked_fill(all_masked, 0.0)
+        combined_features = torch.cat([weighted_bin_emb, global_embeddings], dim=-1)  # (batch_size, num_bins + hidden_size//2)
         
-        # state_value = self.value_head(combined_features)  # (batch_size,)
-        state_value = self.value_head(joint)
+        state_value = self.value_head(combined_features)  # (batch_size,)
         return state_value.view(-1, 1) # expect (batch_size, 1) in omni safe
