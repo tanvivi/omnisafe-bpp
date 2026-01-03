@@ -66,12 +66,21 @@ class CategoricalActor(nn.Module):
             nn.Linear(hidden_sizes[1] // 2, 1)
         ) # bilinear 
         
-        self.log_temp = nn.Parameter(torch.tensor(0.0)) # use smaller temp for initial exploration
-        
+        self.log_temp = nn.Parameter(torch.tensor(-1.0)) # use smaller temp for initial exploration try -1, 0.3
+        self.apply(self._init_weights) 
+        for module in [self.bin_encoder[-1], self.item_encoder[-1]]:
+            if isinstance(module, nn.Linear):
+                nn.init.orthogonal_(module.weight, gain=1.0)
+                nn.init.constant_(module.bias, 0.0)
         self._current_dist = None
         self._after_inference = False
 
-                
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+        # 1. 对于前面的层 (后面接 ReLU 的): 使用 gain=sqrt(2)
+        # 这有助于保持信号经过 ReLU 后的方差
+            nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+            nn.init.constant_(m.bias, 0.0)
     def _distribution(self, obs: torch.Tensor):
         if not isinstance(obs, torch.Tensor):
             obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
