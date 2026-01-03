@@ -94,6 +94,8 @@ class CategoricalActor(nn.Module):
         item_embeddings = item_embeddings.expand(-1, self.num_bins, -1)  # (batch_size, num_bins, hidden_size)
         combined = torch.cat([bin_embeddings, item_embeddings], dim=-1)
         # raw_score = self.score_nn(combined).squeeze(-1)  # (batch_size, num_bins)
+        bin_embeddings = F.normalize(bin_embeddings, dim=-1)
+        item_embeddings = F.normalize(item_embeddings, dim=-1)
         raw_score = torch.einsum("bnd,bnd->bn", bin_embeddings, item_embeddings)
         temp = self.log_temp.exp()
         scaled_score = raw_score * temp
@@ -189,7 +191,7 @@ class BSCritic(nn.Module):
         
         # Value head
         self.value_head = nn.Sequential(
-            nn.Linear(hidden_sizes[1] + hidden_sizes[1]//2, hidden_sizes[1]),
+            nn.Linear(2 * hidden_sizes[1] + hidden_sizes[1]//2, hidden_sizes[1]),
             nn.ReLU(),
             nn.Linear(hidden_sizes[1], hidden_sizes[1]//2),
             nn.ReLU(),
@@ -211,21 +213,28 @@ class BSCritic(nn.Module):
         N = self.num_bins
         
         bin_embeddings = self.bin_encoder(bin_feats)  # (batch_size, num_bins, hidden_size)
-        
-        item_embeddings = self.item_encoder(item_feats).unsqueeze(1)  # (batch_size, 1, hidden_size)
-        item_exp = item_embeddings.expand(-1, N, -1)  # (batch_size, num_bins, hidden_size)
+        if mask is not None:
+            mask = mask.float()                   # (B, N)
+            bin_embeddings = bin_embeddings * mask.unsqueeze(-1)
+            pooled_bin = bin_embeddings.sum(dim=1) / (mask.sum(dim=1, keepdim=True) + 1e-6)
+        else:
+            pooled_bin = bin_embeddings.mean(dim=1) 
+        item_embeddings = self.item_encoder(item_feats) # (batch_size, hidden_size)
+        # item_exp = item_embeddings.expand(-1, N, -1)  # (batch_size, num_bins, hidden_size)
         
         global_embeddings = self.global_encoder(global_feats)  # (batch_size
         
-        similarity_scores = self.similarity_nn(bin_embeddings, item_exp).squeeze(-1)  # (batch_size, num_bins)
+        # similarity_scores = self.similarity_nn(bin_embeddings, item_exp).squeeze(-1)  # (batch_size, num_bins)
         
+        joint = torch.cat([pooled_bin, item_embeddings, global_embeddings], dim=-1)
 
         if mask is not None:
             mask = mask.bool()
-            similarity_scores = similarity_scores.masked_fill(~mask, 0.0)  # (batch_size, num_bins)
-        attn_weights = F.softmax(similarity_scores, dim=-1)
-        weighted_bin_emb = (attn_weights.unsqueeze(-1) * bin_embeddings).sum(dim=1)  # (batch_size, hidden_size)
-        combined_features = torch.cat([weighted_bin_emb, global_embeddings], dim=-1)  # (batch_size, num_bins + hidden_size//2)
+            # similarity_scores = similarity_scores.masked_fill(~mask, 0.0)  # (batch_size, num_bins)
+        # attn_weights = F.softmax(similarity_scores, dim=-1)
+        # weighted_bin_emb = (attn_weights.unsqueeze(-1) * bin_embeddings).sum(dim=1)  # (batch_size, hidden_size)
+        # combined_features = torch.cat([weighted_bin_emb, global_embeddings], dim=-1)  # (batch_size, num_bins + hidden_size//2)
         
-        state_value = self.value_head(combined_features)  # (batch_size,)
+        # state_value = self.value_head(combined_features)  # (batch_size,)
+        state_value = self.value_head(joint)
         return state_value.view(-1, 1) # expect (batch_size, 1) in omni safe
