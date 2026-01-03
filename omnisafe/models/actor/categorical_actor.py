@@ -55,8 +55,16 @@ class CategoricalActor(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
-        self.score_nn = nn.Bilinear(hidden_sizes[1], hidden_sizes[1], 1)
-        self.log_temp = nn.Parameter(torch.zeros(1))
+        self.score_nn = nn.Sequential(
+            nn.Linear(hidden_sizes[1] * 2, hidden_sizes[1]),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_sizes[1], hidden_sizes[1] // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_sizes[1] // 2, 1)
+        ) # bilinear 
+        
+        self.log_temp = nn.Parameter(torch.tensor(1.5)) # learnable temperature, enlarge 
         
         self._current_dist = None
         self._after_inference = False
@@ -81,7 +89,9 @@ class CategoricalActor(nn.Module):
         
         bin_embeddings = self.bin_encoder(bin_features)  # (batch_size, num_bins, hidden_size)
         item_embeddings = self.item_encoder(item_features).unsqueeze(1)  # (batch_size, hidden_size)
-        raw_score = self.score_nn(bin_embeddings, item_embeddings.expand(-1, self.num_bins, -1)).squeeze(-1)  # (batch_size, num_bins)
+        item_embeddings = item_embeddings.expand(-1, self.num_bins, -1)  # (batch_size, num_bins, hidden_size)
+        combined = torch.cat([bin_embeddings, item_embeddings], dim=-1)
+        raw_score = self.score_nn(combined).squeeze(-1)  # (batch_size, num_bins)
         temp = self.log_temp.exp()
         scaled_score = raw_score * temp
         
