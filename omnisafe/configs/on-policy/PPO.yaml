@@ -41,11 +41,11 @@ defaults:
     # entropy coefficient
     entropy_coef: 0.01
     # normalize reward
-    reward_normalize: False
+    reward_normalize: False  # FIXED: Disable for now - binary reward [1.0, -0.5] doesn't need normalization
     # normalize cost
     cost_normalize: False
     # normalize observation
-    obs_normalize: False
+    obs_normalize: True  # FIXED: Enable observation normalization for stable training
     # early stop when kl divergence is bigger than target kl
     kl_early_stop: True
     # use max gradient norm
@@ -57,7 +57,7 @@ defaults:
     # critic norm coefficient
     critic_norm_coef: 0.001
     # reward discount factor
-    gamma: 1.00
+    gamma: 0.99  # FIXED: Changed from 1.00 to 0.99 for better value estimation stability
     # cost discount factor
     cost_gamma: 0.99
     # lambda for gae
