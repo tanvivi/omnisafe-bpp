@@ -41,11 +41,11 @@ defaults:
     # entropy coefficient
     entropy_coef: 0.01
     # normalize reward
-    reward_normalize: False  # FIXED: Disable for now - binary reward [1.0, -0.5] doesn't need normalization
+    reward_normalize: True  # FIXED: Enable reward normalization for training stability
     # normalize cost
     cost_normalize: False
     # normalize observation
-    obs_normalize: True  # FIXED: Enable observation normalization for stable training
+    obs_normalize: False
     # early stop when kl divergence is bigger than target kl
     kl_early_stop: True
     # use max gradient norm

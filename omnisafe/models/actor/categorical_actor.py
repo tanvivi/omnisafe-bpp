@@ -58,16 +58,33 @@ class CategoricalActor(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
-        self.score_nn = nn.Sequential(
-            nn.Linear(hidden_sizes[1] * 2, hidden_sizes[1]),
+        # Scoring methods: Choose one that explicitly models bin-item relationships
+        # Option 1: Bilinear transformation - explicit relationship modeling with larger range
+        # Score = bin_emb^T @ W @ item_emb, where W is learnable matrix
+        self.bilinear_weight = nn.Parameter(torch.randn(hidden_sizes[1], hidden_sizes[1]))
+        
+        # Option 2: Element-wise interaction + MLP - explicit interaction then processing
+        # First compute element-wise product (explicit interaction), then MLP
+        self.interaction_nn = nn.Sequential(
+            nn.Linear(hidden_sizes[1], hidden_sizes[1]),
+            nn.LayerNorm(hidden_sizes[1]),
             nn.ReLU(),
-            # nn.Dropout(0.1),
             nn.Linear(hidden_sizes[1], hidden_sizes[1] // 2),
             nn.ReLU(),
             nn.Linear(hidden_sizes[1] // 2, 1)
-        ) # bilinear 
-        # TODO change to 0.0 later DONE
-        self.log_temp = nn.Parameter(torch.tensor(0.0)) # use smaller temp for initial exploration try -1, 0.3
+        )
+        
+        # Option 3: Learnable scale for cosine similarity
+        # Instead of fixed 5.0, use learnable scale parameter
+        self.log_scale = nn.Parameter(torch.tensor(np.log(5.0)))  # Initial scale = 5.0
+        
+        # Scoring method selection: 'bilinear', 'interaction', 'cosine', or 'cosine_scaled'
+        self.scoring_method = kwargs.get('scoring_method', 'bilinear')  # Default: bilinear
+        
+        # Temperature parameter with better initialization and constraints
+        # log_temp=0.0 gives temp=1.0, which is a good starting point
+        # We clamp it to prevent extreme values during training
+        self.log_temp = nn.Parameter(torch.tensor(0.0))  # temp=1.0 initially
         self._init_weights()
         for module in [self.bin_encoder[-1], self.item_encoder[-1]]:
             if isinstance(module, nn.Linear):
@@ -75,47 +92,54 @@ class CategoricalActor(nn.Module):
                 nn.init.constant_(module.bias, 0.0)
         self._current_dist = None
         self._after_inference = False
+        self._enable_diagnostics = False  # Disable by default for performance
 
     def _init_weights(self):
         """
-        专门针对 Cosine Similarity 架构的初始化策略
+        Improved weight initialization for stable training
         """
-        # 1. 第一轮遍历：通用初始化 (针对所有中间层)
+        # 1. First pass: General initialization for all layers
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                # 正交初始化有助于保持特征的独立性
-                # gain=sqrt(2) 是为了配合 ReLU
+                # Orthogonal initialization helps maintain feature independence
+                # gain=sqrt(2) is for ReLU activation
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
             
             elif isinstance(m, nn.LayerNorm):
-                # LayerNorm 标准初始化
+                # Standard LayerNorm initialization
                 nn.init.constant_(m.bias, 0.0)
                 nn.init.constant_(m.weight, 1.0)
 
-        # 2. 第二轮遍历：修正输出层 (Embedding Heads)
-        # 这一步至关重要！覆盖掉上面的通用初始化
+        # 2. Second pass: Special initialization for output layers
+        # For encoder output layers (if using cosine similarity)
         for encoder in [self.bin_encoder, self.item_encoder]:
-            # 获取该 encoder 的最后一层 (假设是 Sequential)
-            # 注意：如果你的 Encoder 结尾是 LayerNorm，请往前回溯找到最后一个 Linear
-            last_module = list(encoder.modules())[-1] 
-            
-            # 如果结尾是 Sequential，我们要找里面的最后一个 Linear
+            last_module = list(encoder.modules())[-1]
             if not isinstance(last_module, nn.Linear):
                 for sub_m in reversed(list(encoder.modules())):
                     if isinstance(sub_m, nn.Linear):
                         last_module = sub_m
                         break
             
-            # 对 Embedding 输出层进行重置
             if isinstance(last_module, nn.Linear):
-                print(f"Re-initializing output layer: {last_module}")
-                # Gain = 1.0 (因为后面没有 ReLU，直接进 Normalize)
+                # Smaller gain for embedding layers to prevent extreme values
                 nn.init.orthogonal_(last_module.weight, gain=1.0)
-                # Bias = 0.0 (极其重要：确保向量中心在原点)
                 if last_module.bias is not None:
                     nn.init.constant_(last_module.bias, 0.0)
+        
+        # 3. Special initialization for scoring layers
+        # Bilinear weight: Xavier initialization for better gradient flow
+        nn.init.xavier_uniform_(self.bilinear_weight, gain=1.0)
+        
+        # Interaction MLP output layer: smaller gain for stability
+        if hasattr(self.interaction_nn, '__iter__'):
+            for module in reversed(list(self.interaction_nn.modules())):
+                if isinstance(module, nn.Linear):
+                    nn.init.orthogonal_(module.weight, gain=0.5)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0.0)
+                    break
 
     def _distribution(self, obs: torch.Tensor):
         if not isinstance(obs, torch.Tensor):
@@ -135,27 +159,46 @@ class CategoricalActor(nn.Module):
         mask_f= mask.float()
         
         bin_embeddings = self.bin_encoder(bin_features)  # (batch_size, num_bins, hidden_size)
-        item_embeddings = self.item_encoder(item_features).unsqueeze(1)  # (batch_size, hidden_size)
+        item_embeddings = self.item_encoder(item_features).unsqueeze(1)  # (batch_size, 1, hidden_size)
         item_embeddings = item_embeddings.expand(-1, self.num_bins, -1)  # (batch_size, num_bins, hidden_size)
-        combined = torch.cat([bin_embeddings, item_embeddings], dim=-1)
-        # raw_score = self.score_nn(combined).squeeze(-1)  # (batch_size, num_bins)
-        bin_embeddings = F.normalize(bin_embeddings, dim=-1)
-        item_embeddings = F.normalize(item_embeddings, dim=-1)
-        raw_score = torch.einsum("bnd,bnd->bn", bin_embeddings, item_embeddings)
         
-        temp = torch.clamp(self.log_temp, max=2.5).exp()
-        scaled_score = raw_score * temp
+        # Explicit relationship modeling with larger range
+        if self.scoring_method == 'bilinear':
+            # Bilinear transformation: bin^T @ W @ item
+            # Explicitly models relationship, no range restriction
+            # For each (bin, item) pair: compute bin^T @ W @ item
+            # Efficient einsum: (B, N, H) @ (H, H) with (B, N, H) -> (B, N)
+            raw_score = torch.einsum('bnh,ho,bnh->bn', bin_embeddings, self.bilinear_weight, item_embeddings)
+            
+        elif self.scoring_method == 'interaction':
+            # Element-wise product (explicit interaction) + MLP
+            # First compute interaction, then process with MLP
+            interaction = bin_embeddings * item_embeddings  # (B, N, H) - explicit element-wise interaction
+            raw_score = self.interaction_nn(interaction).squeeze(-1)  # (B, N)
+            
+        elif self.scoring_method == 'cosine_scaled':
+            # Cosine similarity with learnable scale (instead of fixed 5.0)
+            bin_emb_norm = F.normalize(bin_embeddings, dim=-1)
+            item_emb_norm = F.normalize(item_embeddings, dim=-1)
+            cosine_sim = torch.einsum("bnd,bnd->bn", bin_emb_norm, item_emb_norm)  # [-1, 1]
+            scale = self.log_scale.exp()  # Learnable scale, initialized to 5.0
+            raw_score = cosine_sim * scale  # Range: [-scale, scale]
+            
+        else:  # 'cosine' (default fallback)
+            # Standard cosine similarity with fixed scale
+            bin_emb_norm = F.normalize(bin_embeddings, dim=-1)
+            item_emb_norm = F.normalize(item_embeddings, dim=-1)
+            raw_score = torch.einsum("bnd,bnd->bn", bin_emb_norm, item_emb_norm) * 5.0
         
-        import random
-        if random.random() < 0.001:
-            print("="*20)
-            print(f"input obs :{bin_features}")
-            # print(f"embeddings { bin_embeddings}, {item_embeddings.squeeze(-1)}")
-            current_logits = raw_score[0].detach().cpu().numpy()
-            print(f"🧠 Output Logits: {current_logits}")
-            print(f"   -> Max - Min Diff: {current_logits.max() - current_logits.min():.4f}")
-            print(f"scaled score:{scaled_score[0].detach().cpu().numpy()}")
-            print("="*20)    
+        # Temperature scaling with better constraints
+        # Clamp log_temp to prevent extreme temperatures that can destabilize training
+        # Higher temperature = more exploration, lower temperature = more exploitation
+        temp = torch.clamp(self.log_temp, min=-2.0, max=2.0).exp()  # temp in [0.135, 7.39]
+        scaled_score = raw_score / temp  # Divide by temp: higher temp makes distribution more uniform
+        
+        # Systematized diagnostics (can be enabled/disabled)
+        if hasattr(self, '_enable_diagnostics') and self._enable_diagnostics:
+            self._log_diagnostics(raw_score, scaled_score, temp, mask)    
         # Apply mask
         if mask is not None:
             bool_mask = ~mask
@@ -185,6 +228,53 @@ class CategoricalActor(nn.Module):
             act = act.unsqueeze(1)
         return self._current_dist.log_prob(act.long())
 
+    def _log_diagnostics(self, raw_score, scaled_score, temp, mask):
+        """Systematized diagnostic logging for debugging"""
+        import random
+        if random.random() < 0.01:  # Sample 1% of calls
+            batch_idx = 0
+            raw_score_np = raw_score[batch_idx].detach().cpu().numpy()
+            scaled_score_np = scaled_score[batch_idx].detach().cpu().numpy()
+            
+            # Compute policy statistics
+            probs = F.softmax(scaled_score[batch_idx:batch_idx+1], dim=-1)
+            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean()
+            max_prob = probs.max().item()
+            
+            # Compute valid scores (unmasked)
+            if mask is not None:
+                valid_mask = ~mask[batch_idx].bool()
+                if valid_mask.any():
+                    valid_raw = raw_score_np[valid_mask.cpu().numpy()]
+                    valid_scaled = scaled_score_np[valid_mask.cpu().numpy()]
+                else:
+                    valid_raw = raw_score_np
+                    valid_scaled = scaled_score_np
+            else:
+                valid_raw = raw_score_np
+                valid_scaled = scaled_score_np
+            
+            print("="*50)
+            print(f"🔍 Actor Diagnostics (Batch {batch_idx}):")
+            print(f"  Scoring method: {self.scoring_method}")
+            if self.scoring_method == 'cosine_scaled':
+                scale = self.log_scale.exp().item()
+                print(f"  Learnable scale: {scale:.4f} (log_scale={self.log_scale.item():.4f})")
+            print(f"  Raw score: min={valid_raw.min():.4f}, max={valid_raw.max():.4f}, "
+                  f"mean={valid_raw.mean():.4f}, std={valid_raw.std():.4f}")
+            print(f"  Temperature: {temp.item():.4f} (log_temp={self.log_temp.item():.4f})")
+            print(f"  Scaled score: min={valid_scaled.min():.4f}, max={valid_scaled.max():.4f}, "
+                  f"mean={valid_scaled.mean():.4f}, std={valid_scaled.std():.4f}")
+            print(f"  Policy entropy: {entropy.item():.4f}, Max prob: {max_prob:.4f}")
+            if mask is not None:
+                num_valid = valid_mask.sum().item() if valid_mask.any() else len(valid_raw)
+                print(f"  Valid bins: {num_valid}/{self.num_bins}")
+            print("="*50)
+    
+    def enable_diagnostics(self, enable=True):
+        """Enable/disable diagnostic logging"""
+        self._enable_diagnostics = enable
+    
     @property
     def std(self):
         return torch.zeros(1)
