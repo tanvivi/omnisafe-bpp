@@ -361,10 +361,10 @@ class PolicyGradient(BaseAlgo):
             self.diagnostics.diagnose_buffer_data(data, self._logger)
             self.diagnostics.diagnose_policy_before_update(
                 self._actor_critic,
-                data['obs'][:512],
-                data['act'][:512],
-                data['adv_r'][:512],
-                sample_size=128
+                data['obs'][:1024],
+                data['act'][:1024],
+                data['adv_r'][:1024],
+                sample_size=1024
             )
         obs, act, logp, target_value_r, target_value_c, adv_r, adv_c = (
             data['obs'],
@@ -421,6 +421,18 @@ class PolicyGradient(BaseAlgo):
             if self._cfgs.algo_cfgs.kl_early_stop and kl.item() > self._cfgs.algo_cfgs.target_kl:
                 self._logger.log(f'Early stopping at iter {i + 1} due to reaching max kl')
                 break
+
+        with torch.no_grad():
+            # 注意：如果数据量太大，显存可能不够，这里假设显存足够
+            # 使用 original_obs (你在代码前面定义的) 和 data['target_value_r']
+            values_all_full = self._actor_critic.reward_critic(data['obs'])[0].squeeze(-1)
+            
+            y_true_full = data['target_value_r']
+            var_y_full = torch.var(y_true_full)
+            
+            explained_var_full = 1.0 - torch.var(y_true_full - values_all_full) / (var_y_full + 1e-8)
+            
+        print(f"Global Explained var: {explained_var_full.item():.6f}")
 
         self._logger.store(
             {
@@ -881,7 +893,8 @@ class OmniSafeDiagnostics:
             values = actor_critic.reward_critic(obs_sample)[0]
             
             print(f"\n采样大小 / Sample size: {sample_size}")
-            
+            # 在获取 obs_sample 之后
+            print(f"Obs 差异性检查 (Std): {obs_sample.float().std(dim=0).sum().item():.6f}")
             # 1. Logits分析 / Logits analysis
             if logits is not None:
                 print(f"\nLogits统计 / Logits statistics:")
@@ -1044,10 +1057,10 @@ def integrate_diagnostics_into_pg(pg_instance):
             # 诊断策略状态 / Diagnose policy state
             self.diagnostics.diagnose_policy_before_update(
                 self._actor_critic,
-                data['obs'][:512],  # 采样512个 / Sample 512
-                data['act'][:512],
-                data['adv_r'][:512],
-                sample_size=128
+                data['obs'][:1024],  # 采样512个 / Sample 512
+                data['act'][:1024],
+                data['adv_r'][:1024],
+                sample_size=1024
             )
         
         # 调用原始更新 / Call original update

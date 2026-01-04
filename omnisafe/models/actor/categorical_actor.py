@@ -233,8 +233,11 @@ class BSCritic(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_sizes[0]//2, hidden_sizes[1]//2)
         )
-        self.similarity_nn = nn.Bilinear(hidden_sizes[1], hidden_sizes[1], 1)
-        
+        self.similarity_nn = nn.Sequential(
+            nn.Linear(hidden_sizes[1] * 2, hidden_sizes[1]), 
+            nn.Tanh(),                  # 第一道防线：非线性激活
+            nn.Linear(hidden_sizes[1], 1) # 映射到 1 个分数
+        )
         # Value head
         self.value_head = nn.Sequential(
             nn.Linear(hidden_sizes[1] + hidden_sizes[1]//2, hidden_sizes[1]),
@@ -243,8 +246,21 @@ class BSCritic(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_sizes[1]//2, 1)
         )
-        nn.init.zeros_(self.value_head[-1].weight)
-        nn.init.constant_(self.value_head[-1].bias, 6.0) # TODO change to reward? not sure whether to change the initialization for weight
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+        
+        # 4. 关键修改：不要用 zeros_，改用小的 gain
+        # 这样 Critic 会输出一个随机的小数值（如 0.01, -0.02），而不是死锁在 0
+        nn.init.orthogonal_(self.value_head[-1].weight, gain=1.0)
+        nn.init.constant_(self.value_head[-1].bias, 0.0)
+        # nn.init.zeros_(self.value_head[-1].weight)
+        # nn.init.constant_(self.value_head[-1].bias, 0.0) # TODO change to reward? not sure whether to change the initialization for weight
         
     def forward(self, obs: Union[np.ndarray, torch.Tensor], **kwargs) -> torch.Tensor:
         if not isinstance(obs, torch.Tensor):
@@ -265,8 +281,12 @@ class BSCritic(nn.Module):
         
         global_embeddings = self.global_encoder(global_feats)  # (batch_size
         
-        similarity_scores = self.similarity_nn(bin_embeddings, item_exp).squeeze(-1)  # (batch_size, num_bins)
+        # similarity_scores = self.similarity_nn(bin_embeddings, item_exp).squeeze(-1)  # (batch_size, num_bins)
+        cat_features = torch.cat([bin_embeddings, item_exp], dim=-1) # (B, N, 2H)
         
+        # 2. 通过 MLP 计算分数 (代替 Bilinear)
+        # 形状变化: (B, N, 2H) -> (B, N, H) -> (B, N, 1) -> (B, N)
+        similarity_scores = self.similarity_nn(cat_features).squeeze(-1)
         if mask is not None:
             mask = mask.bool()
             all_masked = (~mask).all(dim=-1, keepdim=True)
