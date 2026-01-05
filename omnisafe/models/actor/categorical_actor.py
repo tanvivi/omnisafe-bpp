@@ -32,7 +32,7 @@ class CategoricalActor(nn.Module):
         activation: str = 'relu',
         weight_initialization_mode: str = 'kaiming_uniform',
         num_bins: int = 5,
-        bin_state_dim: int = 6,
+        bin_state_dim: int = 5,
         bin_size: list = [10, 10, 10],
         device: Union[str, int, torch.device] = "cuda:0",
         **kwargs
@@ -49,13 +49,13 @@ class CategoricalActor(nn.Module):
         self.bin_encoder = nn.Sequential(
             nn.Linear(bin_state_dim, hidden_sizes[0]),
             nn.LayerNorm(hidden_sizes[0]),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
         self.item_encoder = nn.Sequential(
             nn.Linear(self.item_feature_dim, hidden_sizes[0]),
             nn.LayerNorm(hidden_sizes[0]),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
         # Scoring methods: Choose one that explicitly models bin-item relationships
@@ -68,9 +68,9 @@ class CategoricalActor(nn.Module):
         self.interaction_nn = nn.Sequential(
             nn.Linear(hidden_sizes[1], hidden_sizes[1]),
             nn.LayerNorm(hidden_sizes[1]),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[1], hidden_sizes[1] // 2),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[1] // 2, 1)
         )
         
@@ -209,7 +209,7 @@ class CategoricalActor(nn.Module):
             if all_masked.any():
                 bool_mask = torch.where(all_masked, torch.tensor(False, device=device), bool_mask)
 
-            scaled_score = scaled_score.masked_fill(bool_mask, -20.0)
+            scaled_score = scaled_score.masked_fill(bool_mask, -1e8)
         
         return Categorical(logits=scaled_score)
     
@@ -315,20 +315,23 @@ class BSCritic(nn.Module):
         
         # 1. Shared Encoder (特征提取器)
         # 作用：把每个 Bin 的原始数据映射为高维语义向量
+        self.bin_proj = nn.Linear(hidden_sizes[1], hidden_sizes[1])
+        self.item_proj = nn.Linear(hidden_sizes[1], hidden_sizes[1])
         self.bin_encoder = nn.Sequential(
             nn.Linear(bin_state_dim, hidden_sizes[0]),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
         self.item_encoder = nn.Sequential(
             nn.Linear(self.item_feature_dim, hidden_sizes[0]),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[0], hidden_sizes[1])
         )
         self.global_encoder = nn.Sequential(
             nn.Linear(self.global_feature_dim, hidden_sizes[0]//2),
-            nn.ReLU(),
-            nn.Linear(hidden_sizes[0]//2, hidden_sizes[1]//2)
+            nn.LeakyReLU(),
+            nn.Linear(hidden_sizes[0]//2, hidden_sizes[1]//2),
+            nn.LayerNorm(hidden_sizes[1]//2)
         )
         self.similarity_nn = nn.Sequential(
             nn.Linear(hidden_sizes[1] * 2, hidden_sizes[1]), 
@@ -338,14 +341,14 @@ class BSCritic(nn.Module):
         # Value head - Enhanced with multiple aggregation strategies
         # Use both attention-weighted and max-pooled bin embeddings for better discrimination
         # Input: [weighted_bin_emb (H), max_pooled_bin_emb (H), global_emb (H//2)]
-        value_input_dim = hidden_sizes[1] * 2 + hidden_sizes[1]//2
+        value_input_dim = hidden_sizes[1] + hidden_sizes[1]//2
         self.net_list: list[nn.Module] = []
         for idx in range(self._num_critics):
             value_head = nn.Sequential(
             nn.Linear(value_input_dim, hidden_sizes[1]),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[1], hidden_sizes[1]//2),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(hidden_sizes[1]//2, 1)
         )
             self.net_list.append(value_head)
@@ -367,7 +370,7 @@ class BSCritic(nn.Module):
         # #region agent log
         import json
         import os
-        log_path = '/home/qxt0570/code/GOPT/.cursor/debug1.log'
+        log_path = '/home/qxt0570/code/GOPT/.cursor/debug2.log'
         should_log = hasattr(self, '_log_counter') and self._log_counter % 50 == 0
         if not hasattr(self, '_log_counter'):
             self._log_counter = 0
@@ -447,12 +450,15 @@ class BSCritic(nn.Module):
         # #endregion
         
         # similarity_scores = self.similarity_nn(bin_embeddings, item_exp).squeeze(-1)  # (batch_size, num_bins)
-        cat_features = torch.cat([bin_embeddings, item_exp], dim=-1) # (B, N, 2H)
+        # cat_features = torch.cat([bin_embeddings, item_exp], dim=-1) # (B, N, 2H)
         
         # 2. 通过 MLP 计算分数 (代替 Bilinear)
         # 形状变化: (B, N, 2H) -> (B, N, H) -> (B, N, 1) -> (B, N)
-        similarity_scores = self.similarity_nn(cat_features).squeeze(-1)
-        
+        # similarity_scores = self.similarity_nn(cat_features).squeeze(-1)
+        # dot-product
+        bin_proj = self.bin_proj(bin_embeddings)  # (B, N, H/2)
+        item_proj = self.item_proj(item_embeddings)  # (B, H/2)
+        similarity_scores = (bin_proj * item_proj).sum(dim=-1)  # (batch_size, num_bins)
         # #region agent log
         if should_log:
             with open(log_path, 'a') as f:
@@ -504,7 +510,7 @@ class BSCritic(nn.Module):
         
         # Add max pooling as an alternative aggregation to capture different information
         # This helps when attention is uniform - max pooling captures the "best" bin
-        max_pooled_bin_emb = bin_embeddings.max(dim=1)[0]  # (batch_size, hidden_size)
+        # max_pooled_bin_emb = bin_embeddings.max(dim=1)[0]  # (batch_size, hidden_size)
         
         # #region agent log
         if should_log:
@@ -522,19 +528,19 @@ class BSCritic(nn.Module):
                     },
                     'timestamp': int(time.time() * 1000)
                 }) + '\n')
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'B',
-                    'location': 'categorical_actor.py:298',
-                    'message': 'max_pooled_bin_emb_stats',
-                    'data': {
-                        'mean': float(max_pooled_bin_emb.mean().item()),
-                        'std': float(max_pooled_bin_emb.std().item()),
-                        'std_across_batch': float(max_pooled_bin_emb.std(dim=0).mean().item()) if max_pooled_bin_emb.size(0) > 1 else 0.0
-                    },
-                    'timestamp': int(time.time() * 1000)
-                }) + '\n')
+                # f.write(json.dumps({
+                #     'sessionId': 'debug-session',
+                #     'runId': 'run1',
+                #     'hypothesisId': 'B',
+                #     'location': 'categorical_actor.py:298',
+                #     'message': 'max_pooled_bin_emb_stats',
+                #     'data': {
+                #         'mean': float(max_pooled_bin_emb.mean().item()),
+                #         'std': float(max_pooled_bin_emb.std().item()),
+                #         'std_across_batch': float(max_pooled_bin_emb.std(dim=0).mean().item()) if max_pooled_bin_emb.size(0) > 1 else 0.0
+                #     },
+                #     'timestamp': int(time.time() * 1000)
+                # }) + '\n')
         # #endregion
         
         if all_masked is not None and all_masked.any(): # only consider global feature when all bins are masked
@@ -544,16 +550,16 @@ class BSCritic(nn.Module):
                 weighted_bin_emb
             )
             weighted_bin_emb = weighted_bin_emb.masked_fill(all_masked, 0.0)
-            max_pooled_bin_emb = torch.where(
-                all_masked.expand(-1, max_pooled_bin_emb.size(-1)),
-                torch.zeros_like(max_pooled_bin_emb),
-                max_pooled_bin_emb
-            )
-            max_pooled_bin_emb = max_pooled_bin_emb.masked_fill(all_masked, 0.0)
+            # max_pooled_bin_emb = torch.where(
+            #     all_masked.expand(-1, max_pooled_bin_emb.size(-1)),
+            #     torch.zeros_like(max_pooled_bin_emb),
+            #     max_pooled_bin_emb
+            # )
+            # max_pooled_bin_emb = max_pooled_bin_emb.masked_fill(all_masked, 0.0)
         
         # Combine: attention-weighted, max-pooled, and global features
         # This gives the value_head more diverse information to distinguish states
-        combined_features = torch.cat([weighted_bin_emb, max_pooled_bin_emb, global_embeddings], dim=-1)  # (batch_size, 2*H + H//2)
+        combined_features = torch.cat([weighted_bin_emb, global_embeddings], dim=-1)  # (batch_size, 2*H + H//2)
         res = []
         for critic in self.net_list:
             value = critic(combined_features)
