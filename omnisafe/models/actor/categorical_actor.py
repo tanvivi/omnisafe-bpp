@@ -79,7 +79,9 @@ class CategoricalActor(nn.Module):
         self.log_scale = nn.Parameter(torch.tensor(np.log(5.0)))  # Initial scale = 5.0
         
         # Scoring method selection: 'bilinear', 'interaction', 'cosine', or 'cosine_scaled'
-        self.scoring_method = kwargs.get('scoring_method', 'bilinear')  # Default: bilinear
+        # FIXED: Default to 'interaction' for better stability (bilinear can cause large KL)
+        # 'interaction' provides explicit relationship modeling with better initialization control
+        self.scoring_method = kwargs.get('scoring_method', 'interaction')  # Default: interaction (more stable)
         
         # Temperature parameter with better initialization and constraints
         # log_temp=0.0 gives temp=1.0, which is a good starting point
@@ -129,8 +131,9 @@ class CategoricalActor(nn.Module):
                     nn.init.constant_(last_module.bias, 0.0)
         
         # 3. Special initialization for scoring layers
-        # Bilinear weight: Xavier initialization for better gradient flow
-        nn.init.xavier_uniform_(self.bilinear_weight, gain=1.0)
+        # Bilinear weight: Use smaller gain to prevent initial logits from being too large
+        # Smaller gain (0.1-0.2) helps prevent KL divergence explosion at the start
+        nn.init.xavier_uniform_(self.bilinear_weight, gain=0.1)  # Reduced from 1.0 to 0.1
         
         # Interaction MLP output layer: smaller gain for stability
         if hasattr(self.interaction_nn, '__iter__'):
