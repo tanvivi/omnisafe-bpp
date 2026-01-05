@@ -41,7 +41,7 @@ defaults:
     # entropy coefficient
     entropy_coef: 0.01
     # normalize reward
-    reward_normalize: True  # FIXED: Enable reward normalization for training stability
+    reward_normalize: False  # FIXED: Enable reward normalization for training stability
     # normalize cost
     cost_normalize: False
     # normalize observation
@@ -129,14 +129,14 @@ defaults:
       activation: tanh
       # out_activation: tanh
       # learning rate
-      lr: 0.00003
+      lr: 0.0001
     critic:
       # hidden layer sizes
       hidden_sizes: [128, 128]
       # activation function
       activation: tanh
       # learning rate
-      lr: 0.0001
+      lr: 0.0003
 
 ShadowHandCatchOver2UnderarmSafeFinger:
   # training configurations

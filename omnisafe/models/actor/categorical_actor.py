@@ -139,7 +139,7 @@ class CategoricalActor(nn.Module):
         if hasattr(self.interaction_nn, '__iter__'):
             for module in reversed(list(self.interaction_nn.modules())):
                 if isinstance(module, nn.Linear):
-                    nn.init.orthogonal_(module.weight, gain=0.5)
+                    nn.init.orthogonal_(module.weight, gain=0.3)
                     if module.bias is not None:
                         nn.init.constant_(module.bias, 0.0)
                     break
