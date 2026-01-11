@@ -35,7 +35,7 @@ defaults:
     # number of iterations to update the policy
     update_iters: 10
     # batch size for each iteration
-    batch_size: 2048
+    batch_size: 512
     # target kl divergence
     target_kl: 0.05
     # entropy coefficient
@@ -96,7 +96,7 @@ defaults:
   model_cfgs:
     device: cuda:0 # for device setting, only set here works
     # bin_state_dim
-    bin_state_dim: 5
+    bin_state_dim: 100
     # bin size
     bin_size: [10, 10, 10]
     # embedding size

@@ -942,12 +942,12 @@ class OmniSafeDiagnostics:
                 print("  ⚠️  警告：熵接近最大值，策略接近均匀分布")
                 print("  ⚠️  Warning: Entropy close to max, policy nearly uniform")
             
-            # 4. 同一obs下不同action的对比 / Compare different actions for same obs
-            print(f"\n动作-Advantage对比分析 / Action-Advantage comparison:")
-            self._analyze_action_advantage_correlation(
-                obs_sample[:20], act_sample[:20], adv_sample[:20], 
-                probs[:20] if probs is not None else None
-            )
+            # # 4. 同一obs下不同action的对比 / Compare different actions for same obs
+            # print(f"\n动作-Advantage对比分析 / Action-Advantage comparison:")
+            # self._analyze_action_advantage_correlation(
+            #     obs_sample[:20], act_sample[:20], adv_sample[:20], 
+            #     probs[:20] if probs is not None else None
+            # )
             
             # 5. Value估计质量 / Value estimation quality
             print(f"\nValue估计 / Value estimates:")
@@ -960,29 +960,29 @@ class OmniSafeDiagnostics:
                 'normalized_entropy': normalized_entropy.item(),
             }
     
-    def _analyze_action_advantage_correlation(
-        self, 
-        obs: torch.Tensor, 
-        act: torch.Tensor, 
-        adv: torch.Tensor,
-        probs: torch.Tensor = None
-    ):
-        """
-        分析动作和advantage的相关性
-        Analyze correlation between actions and advantages
-        """
-        print("\n  前5个样本的详细信息 / Details for first 5 samples:")
-        for i in range(20):
-            print(f"\n  样本 {i+1} / Sample {i+1}:")
-            print(f"    Advantage mean: {adv.mean():.4f}, std: {adv.std():.4f}")
-            print(f"    选择的动作 / Selected action: {act[i].item()}")
-            print(f"    Advantage: {adv[i].item():.4f}")
+    # def _analyze_action_advantage_correlation(
+    #     self, 
+    #     obs: torch.Tensor, 
+    #     act: torch.Tensor, 
+    #     adv: torch.Tensor,
+    #     probs: torch.Tensor = None
+    # ):
+    #     """
+    #     分析动作和advantage的相关性
+    #     Analyze correlation between actions and advantages
+    #     """
+    #     print("\n  前5个样本的详细信息 / Details for first 5 samples:")
+    #     for i in range(20):
+    #         print(f"\n  样本 {i+1} / Sample {i+1}:")
+    #         print(f"    Advantage mean: {adv.mean():.4f}, std: {adv.std():.4f}")
+    #         print(f"    选择的动作 / Selected action: {act[i].item()}")
+    #         print(f"    Advantage: {adv[i].item():.4f}")
             
-            if probs is not None:
-                print(f"    各动作概率 / Action probabilities:")
-                for j in range(probs.size(-1)):
-                    marker = " ← 选中" if j == act[i].item() else ""
-                    print(f"      Action {j}: {probs[i, j].item():.4f}{marker}")
+    #         if probs is not None:
+    #             print(f"    各动作概率 / Action probabilities:")
+    #             for j in range(probs.size(-1)):
+    #                 marker = " ← 选中" if j == act[i].item() else ""
+    #                 print(f"      Action {j}: {probs[i, j].item():.4f}{marker}")
     
     def diagnose_update_dynamics(
         self,
