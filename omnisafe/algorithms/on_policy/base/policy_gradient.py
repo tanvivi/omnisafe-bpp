@@ -208,6 +208,8 @@ class PolicyGradient(BaseAlgo):
         self._logger.register_key('Train/KL')
         self._logger.register_key('Train/StopIter')
         self._logger.register_key('Train/PolicyRatio', min_and_max=True)
+        self._logger.register_key('Diagnostics/CriticGradNorm', delta=True)
+        self._logger.register_key('Diagnostics/ActorGradNorm', delta=True)
         self._logger.register_key('Train/LR')
         if self._cfgs.model_cfgs.actor_type == 'gaussian_learning':
             self._logger.register_key('Train/PolicyStd')
@@ -481,24 +483,14 @@ class PolicyGradient(BaseAlgo):
                 loss += param.pow(2).sum() * self._cfgs.algo_cfgs.critic_norm_coef
 
         loss.backward()
-        model_param_ids = [id(p) for p in self._actor_critic.reward_critic.parameters()]
-        opt_param_ids = []
-        for group in self._actor_critic.reward_critic_optimizer.param_groups:
-            opt_param_ids += [id(p) for p in group['params']]
 
-        if not hasattr(self, '_checked_critic_grad'):
-            self._checked_critic_grad = True
-            total_norm = 0
-            for param in self._actor_critic.reward_critic.parameters():
-                if param.grad is not None:
-                    total_norm += param.grad.data.norm(2).item() ** 2
-            total_norm = total_norm ** 0.5
-            # print(f"Critic grad norm: {total_norm:.4f}")
-        # values = self._actor_critic.reward_critic(obs)[0]
-        # print(f"Raw values: {values.detach()}")
-        # print(f"Value range: [{values.std():.3f}, {values.min():.3f}, {values.max():.3f}, {values.mean():.3f}]")
-        # print(f"target_values mean/std: {target_value_r.mean():.3f}/{target_value_r.std():.3f}, range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
-        # print(f"Critic loss: {loss.item():.4f}, target_value range: [{target_value_r.min():.3f}, {target_value_r.max():.3f}]")
+        # Log gradient norms before clipping (for diagnostics)
+        critic_grad_norm = 0.0
+        for param in self._actor_critic.reward_critic.parameters():
+            if param.grad is not None:
+                critic_grad_norm += param.grad.data.norm(2).item() ** 2
+        critic_grad_norm = critic_grad_norm ** 0.5
+
         if self._cfgs.algo_cfgs.use_max_grad_norm:
             clip_grad_norm_(
                 self._actor_critic.reward_critic.parameters(),
@@ -526,9 +518,12 @@ class PolicyGradient(BaseAlgo):
         #         print("   key shape", getattr(k,'shape', None))
 
         self._actor_critic.reward_critic_optimizer.step()
-        # second = next(self._actor_critic.reward_critic.parameters()).clone().detach()
-        # print("param diff:", (first - second).abs().mean().item())
-        self._logger.store({'Loss/Loss_reward_critic': loss.mean().item()})
+
+        # Store gradient norm and loss for monitoring
+        self._logger.store({
+            'Diagnostics/CriticGradNorm': critic_grad_norm,
+            'Loss/Loss_reward_critic': loss.item(),
+        })
 
     def _update_cost_critic(self, obs: torch.Tensor, target_value_c: torch.Tensor) -> None:
         r"""Update value network under a double for loop.
@@ -612,6 +607,14 @@ class PolicyGradient(BaseAlgo):
         loss = self._loss_pi(obs, act, logp, adv)
         self._actor_critic.actor_optimizer.zero_grad()
         loss.backward()
+
+        # Log gradient norms before clipping (for diagnostics)
+        actor_grad_norm = 0.0
+        for p in self._actor_critic.actor.parameters():
+            if p.grad is not None:
+                actor_grad_norm += p.grad.data.norm(2).item() ** 2
+        actor_grad_norm = actor_grad_norm ** 0.5
+
         if self._cfgs.algo_cfgs.use_max_grad_norm:
             clip_grad_norm_(
                 self._actor_critic.actor.parameters(),
@@ -619,6 +622,9 @@ class PolicyGradient(BaseAlgo):
             )
         distributed.avg_grads(self._actor_critic.actor)
         self._actor_critic.actor_optimizer.step()
+
+        # Store gradient norm for monitoring
+        self._logger.store({'Diagnostics/ActorGradNorm': actor_grad_norm})
         # DEBUG12.7
         if hasattr(self, '_diagnose_counter'):
             self._diagnose_counter += 1

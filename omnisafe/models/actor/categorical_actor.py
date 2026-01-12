@@ -29,15 +29,35 @@ class binCNN(nn.Module):
         self.hmap_size = hmap_size
         self.embedding_dim = embedding_dim
         self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
+        # self.bn1 = nn.BatchNorm2d(16)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        # self.bn2 = nn.BatchNorm2d(32)
         self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        # self.bn3 = nn.BatchNorm2d(64)
         
         self.pool = nn.MaxPool2d(2, 2)
         conv_output_size = self._get_conv_output_size()
         self.fc1 = nn.Linear(conv_output_size, 128)
+        # self.bn_fc = nn.BatchNorm1d(128)
         self.fc2 = nn.Linear(128, embedding_dim)
         
-        self.dropout = nn.Dropout(0.2)
+        self.dropout = nn.Dropout(0.1)
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
     
     def _get_conv_output_size(self):
         with torch.no_grad():
@@ -49,21 +69,55 @@ class binCNN(nn.Module):
 
     def forward(self, hmaps):
         batch_size, num_bins, L, W = hmaps.shape
-        x = hmaps.reshape(-1, 1, L, W)  # (batch_size * num_bins, 1, L, W
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = F.relu(self.conv3(x))
+        x = hmaps.reshape(-1, 1, L, W)
+        x = self.pool(F.relu((self.conv1(x))))
+        x = self.pool(F.relu((self.conv2(x))))
+        x = F.relu((self.conv3(x)))
         
         x = x.view(batch_size * num_bins, -1)
-        x = F.relu(self.fc1(x))
+        x = F.relu((self.fc1(x)))
         x = self.dropout(x)
         x = self.fc2(x)
         embeddings = x.view(batch_size, num_bins, -1)
         
         return embeddings
 
+
+class BinContextAggregator(nn.Module):
+    """Simple aggregator for bin context using weighted averaging"""
+    def __init__(self, embedding_dim):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        
+        self.importance_net = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim // 2),
+            nn.Tanh(),
+            nn.Linear(embedding_dim // 2, 1)
+        )
+        
+        self.layer_norm = nn.LayerNorm(embedding_dim)
+        
+    def forward(self, bin_embeddings, mask=None):
+        """
+        Args:
+            bin_embeddings: (batch_size, num_bins, embedding_dim)
+            mask: (batch_size, num_bins) - True for valid bins
+        Returns:
+            context: (batch_size, embedding_dim)
+        """
+        importance_scores = self.importance_net(bin_embeddings).squeeze(-1)
+        
+        if mask is not None:
+            importance_scores = importance_scores.masked_fill(~mask, -1e9)
+        
+        attention_weights = F.softmax(importance_scores, dim=-1).unsqueeze(-1)
+        context = (bin_embeddings * attention_weights).sum(dim=1)
+        context = self.layer_norm(context)
+        
+        return context
+
 class CategoricalActor(nn.Module):
-    """OmniSafe-compatible Actor with shared Transformer backbone"""
+
     def __init__(
         self,
         obs_space,
@@ -87,35 +141,71 @@ class CategoricalActor(nn.Module):
         self.item_feature_dim = 3
         self.global_feature_dim = 4
         self.bin_embedding_dim = hidden_sizes[1]
-        # input_dim =  self.bin_state_dim  + self.item_feature_dim  # global features + bin features + item features + bin context features
+        
+        # Feature encoders with normalization
         self.bin_encoder = binCNN(hmap_size=(bin_size[1], bin_size[2]), embedding_dim=hidden_sizes[1])
+        self.bin_norm = nn.LayerNorm(hidden_sizes[1])
+        
         self.item_encoder = nn.Sequential(
             nn.Linear(self.item_feature_dim, hidden_sizes[0]),
             nn.LayerNorm(hidden_sizes[0]),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_sizes[0], hidden_sizes[1])
+            nn.ReLU(),
+            nn.Linear(hidden_sizes[0], hidden_sizes[1]),
+            nn.LayerNorm(hidden_sizes[1])
         )
+        
         self.global_encoder = nn.Sequential(
             nn.Linear(self.global_feature_dim, hidden_sizes[0]//2),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(hidden_sizes[0]//2, hidden_sizes[1]//2),
+            nn.LayerNorm(hidden_sizes[1]//2)
         )
-        context_dim = hidden_sizes[1] + hidden_sizes[1]//2 # item embedding dim + global embedding dim
-        self.query_proj = nn.Linear(context_dim, self.bin_embedding_dim)
-        self.key_proj = nn.Linear(self.bin_embedding_dim, self.bin_embedding_dim)
-        self.value_proj = nn.Linear(self.bin_embedding_dim, self.bin_embedding_dim)
         
-        self.policy_head = nn.Sequential(
-            nn.Linear(bin_embedding_dim + context_dim, hidden_sizes[1]),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_sizes[1], 1)    
-            )
+        # Bin context aggregator
+        self.bin_context_aggregator = BinContextAggregator(self.bin_embedding_dim)
+        
+        # Attention mechanism
+        context_dim = self.bin_embedding_dim + hidden_sizes[1] + hidden_sizes[1]//2
+        
+        # Query and key projections (linear transformations, following standard attention)
+        # Removing LeakyReLU to improve gradient flow and stability
+        self.query_net = nn.Sequential(
+            nn.Linear(context_dim, self.bin_embedding_dim),
+            nn.LayerNorm(self.bin_embedding_dim)
+        )
 
+        self.key_net = nn.Sequential(
+            nn.Linear(self.bin_embedding_dim, self.bin_embedding_dim),
+            nn.LayerNorm(self.bin_embedding_dim)
+        )
+        
+        # Learnable bias for each bin
+        self.bin_bias = nn.Parameter(torch.zeros(num_bins))
+
+        # Fixed temperature for attention scaling (following standard Transformer practice)
+        # Using sqrt(d_k) as per "Attention is All You Need" paper
+        self.temperature = float(np.sqrt(self.bin_embedding_dim))  # Fixed at 8.0 for embedding_dim=64
+        
+        # State management for OmniSafe's call pattern
         self._current_dist = None
         self._after_inference = False
-        self._enable_diagnostics = False  # Disable by default for performance
         
-    def _distribution(self, obs: torch.Tensor):
+        # Diagnostics flag
+        self._enable_diagnostics = False
+        
+    def _distribution(self, obs: torch.Tensor) -> Categorical:
+        """Compute action distribution from observations.
+        
+        This method encodes observations through the attention mechanism
+        and produces logits for bin selection. It is called by forward()
+        and predict() to establish the distribution state.
+        
+        Args:
+            obs: Observation tensor from environment
+            
+        Returns:
+            Categorical distribution over bins
+        """
         if not isinstance(obs, torch.Tensor):
             obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
         
@@ -124,112 +214,135 @@ class CategoricalActor(nn.Module):
             obs = obs.to(device)
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
-        if torch.isnan(obs).any():
-            print("💀 [Fatal] Input Observation contains NaN!")
-            # 打印出有问题的部分，帮助定位是 Env 哪里算错了
-            print(f"NaN indices: {torch.nonzero(torch.isnan(obs))}")
-            raise ValueError("Input NaN detected")
-        batch_size = obs.shape[0]
         
-        # Parse mask
-        mask, bin_features, item_features, global_features = obs_processor(obs, self.num_bins, self.bin_state_dim)
+        # Parse observation into components
+        mask, bin_features, item_features, global_features = obs_processor(
+            obs, self.num_bins, self.bin_state_dim
+        )
         mask = mask.bool()
-        # mask_f= mask.float()
         
-        bin_embeddings = self.bin_encoder(bin_features)  # (batch_size, num_bins, hidden_size)
-        if torch.isnan(bin_embeddings).any():
-            print("💀 [Fatal] Bin Encoder output contains NaN! (Weights might be broken)")
-            # 检查权重是否已坏
-            for name, param in self.bin_encoder.named_parameters():
-                if torch.isnan(param).any():
-                    print(f" -> Found NaN in weights: {name}")
-            raise ValueError("Encoder NaN detected")
-        item_embeddings = self.item_encoder(item_features).unsqueeze(1)  # (batch_size, 1, hidden_size)
-        global_embeddings = self.global_encoder(global_features).unsqueeze(1)  # (batch_size, hidden_size//2)
-        context = torch.cat([item_embeddings, global_embeddings], dim=-1)
-        query = self.query_proj(context)  # (batch_size, num_bins, bin_embedding_dim)
-        keys = self.key_proj(bin_embeddings)      # (batch_size, num_bins, bin_embedding_dim)
+        # Encode features through neural networks
+        bin_embeddings = self.bin_encoder(bin_features)
+        bin_embeddings = self.bin_norm(bin_embeddings)
         
-        attn_scores = torch.matmul(query, keys.transpose(-2, -1)) / np.sqrt(self.bin_embedding_dim)  # (batch_size, num_bins, num_bins)
-        if torch.isnan(attn_scores).any():
-             print("💀 [Fatal] Attention Scores contain NaN (Before Masking)!")
-             print(f"Query max: {query.max()}, Key max: {keys.max()}")
-             raise ValueError("Attention NaN detected")
-        # Systematized diagnostics (can be enabled/disabled)
-        if hasattr(self, '_enable_diagnostics') and self._enable_diagnostics:
-            self._log_diagnostics(attn_scores, mask)
-        # Apply mask
+        item_embeddings = self.item_encoder(item_features)
+        global_embeddings = self.global_encoder(global_features)
+        
+        # Aggregate bin context using attention pooling
+        bin_context = self.bin_context_aggregator(bin_embeddings, mask)
+        
+        # Construct attention query and keys
+        context = torch.cat([bin_context, item_embeddings, global_embeddings], dim=-1)
+        query = self.query_net(context).unsqueeze(1)
+        keys = self.key_net(bin_embeddings)
+        
+        # Compute scaled dot-product attention scores
+        # Using fixed temperature for stable training
+        attn_scores = torch.matmul(query, keys.transpose(-2, -1)).squeeze(1) / self.temperature
+        
+        # Add learnable per-bin bias
+        attn_scores = attn_scores + self.bin_bias.unsqueeze(0)
+
+        # CRITICAL: Apply mask BEFORE clipping to avoid extreme value disparities
+        # This prevents KL divergence explosion caused by masked values being far outside valid range
         if mask is not None:
             bool_mask = ~mask
+            # Handle edge case where all bins are masked
             all_masked = bool_mask.all(dim=-1, keepdim=True)
             if all_masked.any():
-                print("⚠️ Warning: All-masked state detected in Actor. Unmasking to avoid crash.")
-                bool_mask = torch.where(all_masked, torch.tensor(False, device=device), bool_mask)
+                print("⚠️ Warning: All bins masked - this should not happen in valid states")
+                bool_mask = torch.where(
+                    all_masked,
+                    torch.tensor(False, device=device),
+                    bool_mask
+                )
+            # Use -1e9 instead of -1e8 for better numerical stability
+            attn_scores = attn_scores.masked_fill(bool_mask, -1e9)
 
-            attn_scores = attn_scores.masked_fill(bool_mask, -1e4)
+        # Clip for numerical stability AFTER masking
+        attn_scores = torch.clamp(attn_scores, min=-100, max=100.0)
+
+        # Diagnostics logging
+        if self._enable_diagnostics:
+            self._log_diagnostics(attn_scores, mask)
         
         return Categorical(logits=attn_scores)
     
-    def forward(self, obs):
+    def forward(self, obs: torch.Tensor) -> Categorical:
         self._current_dist = self._distribution(obs)
         self._after_inference = True
         return self._current_dist
     
-    def predict(self, obs, deterministic=False):
+    def predict(self, obs: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         self._current_dist = self._distribution(obs)
         self._after_inference = True
-        action = self._current_dist.probs.argmax(-1) if deterministic else self._current_dist.sample()
+        
+        if deterministic:
+            action = self._current_dist.probs.argmax(-1)
+        else:
+            action = self._current_dist.sample()
+        
         return action.squeeze(-1) if action.dim() > 1 else action
     
     def log_prob(self, act):
         assert self._after_inference, "Must call forward() or predict() before log_prob()"
         self._after_inference = False
-        if act.dim() == 1:
-            act = act.unsqueeze(1)
-        return self._current_dist.log_prob(act.long())
+        if not hasattr(self, '_debug_printed'):
+            self._debug_printed = True  # 只打印一次，防止刷屏
+            print("\n🔍 [DEBUG] log_prob Shape Check:")
+            print(f"  1. Dist Batch Shape: {self._current_dist.batch_shape}")
+            print(f"  2. Input Action Shape: {act.shape}")
+        # --- 调试代码结束 ---
+        
+        if act.dim() > 1:
+            act = act.squeeze(-1)
 
-    def _log_diagnostics(self, logits, mask):
-        """
-        logits: (Batch, N) - 未经过 Softmax 的分数
-        mask: (Batch, N) - 有效掩码
+        if not hasattr(self, '_debug_printed_2'):
+            self._debug_printed_2 = True
+            print(f"  3. Squeezed Action Shape: {act.shape}")
+            # 检查是否匹配
+            if act.shape != self._current_dist.batch_shape:
+                print(f"  🚨 CRITICAL MISMATCH: Action {act.shape} != Dist {self._current_dist.batch_shape}")
+                print("  这会导致 PyTorch 生成 [B, B] 的巨大矩阵，引发 KL 爆炸！")
+            else:
+                print(f"  ✅ Match: Action {act.shape} == Dist {self._current_dist.batch_shape}")
+            print("-" * 30 + "\n")
+        return self._current_dist.log_prob(act.long())
+    
+    def _log_diagnostics(self, logits: torch.Tensor, mask: torch.Tensor):
+        """Log diagnostic information about logits and distribution properties.
+        
+        This method provides insights into the policy's behavior during training,
+        including logit statistics, entropy, and learned parameters. It samples
+        calls to avoid excessive logging overhead.
         """
         import random
-        if random.random() < 0.01:  # Sample 1% of calls
-        
+        if random.random() < 0.05:  # Sample 5% of calls
             with torch.no_grad():
-                # 1. 基础统计量 (Logits Variance)
-                # 只统计 mask 为 True 的部分，避免被 -1e8 干扰
                 if mask is not None:
-                    # 这种写法稍微粗糙，但能看个大概
-                    valid_logits = logits[mask.bool()] 
-                    logit_std = valid_logits.std().item()
-                    logit_range = (valid_logits.max() - valid_logits.min()).item()
+                    valid_logits = logits[mask.bool()]
+                    if valid_logits.numel() > 0:
+                        logit_std = valid_logits.std().item()
+                        logit_range = (valid_logits.max() - valid_logits.min()).item()
+                        logit_mean = valid_logits.mean().item()
+                    else:
+                        logit_std = logit_range = logit_mean = 0.0
                 else:
                     logit_std = logits.std().item()
                     logit_range = (logits.max() - logits.min()).item()
+                    logit_mean = logits.mean().item()
 
-                # 2. 概率分布统计 (Entropy & Confidence)
-                probs = F.softmax(logits, dim=-1) # (B, N)
-                
-                # 计算熵: -sum(p * log(p))
-                # 加上 1e-8 防止 log(0)
+                probs = F.softmax(logits, dim=-1)
                 entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1).mean().item()
-                
-                # 计算最大置信度 (Max Probability)
                 max_prob = probs.max(dim=-1)[0].mean().item()
-                
-                # 3. 打印或 Log
-                print(f"🔍 [Actor Check] Logit Std: {logit_std:.4f} | Range: {logit_range:.4f} | "
-                    f"Entropy: {entropy:.4f} | MaxProb: {max_prob:.4f}")
-                
-                # 4. 警报
-                if logit_std < 0.01:
-                    print("⚠️ Warning: Attention Collapse (Logits are identical)")
-                if max_prob < (1.0 / logits.size(-1)) + 0.1:
-                    print("⚠️ Warning: Actor is guessing randomly")
+
+                print(f"🔍 [Actor Diagnostics]")
+                print(f"    Logits - Mean: {logit_mean:.3f} | Std: {logit_std:.3f} | Range: {logit_range:.3f}")
+                print(f"    Distribution - Entropy: {entropy:.3f} | Max Prob: {max_prob:.3f}")
+                print(f"    Temperature (fixed): {self.temperature:.3f}")
+                print(f"    Bin Bias: [{', '.join([f'{b:.3f}' for b in self.bin_bias.data.cpu().numpy()])}]")
     
-    def enable_diagnostics(self, enable=True):
-        """Enable/disable diagnostic logging"""
+    def enable_diagnostics(self, enable: bool = True):
         self._enable_diagnostics = enable
     
     @property
@@ -240,7 +353,7 @@ class CategoricalActor(nn.Module):
     def std(self, std):
         pass
 class BSCritic(nn.Module):
-    """OmniSafe-compatible Critic with shared Transformer backbone"""
+    """Simplified Critic with proper initialization"""
     def __init__(
         self,
         obs_space,
@@ -257,51 +370,50 @@ class BSCritic(nn.Module):
         super().__init__()
         
         self.device = device
-        
         self._num_critics = num_critics
-        
-        # Critic-specific layers
         self.num_bins = num_bins
         self.bin_state_dim = bin_state_dim
-        self.item_feature_dim = 3 # L,W,H
-        self.global_feature_dim = 4 # util_std, util_mean, itemcnt_std, itemcnt_mean
-        self.input_dim = self.bin_state_dim + self.item_feature_dim  # bin features + item features + global features
+        self.item_feature_dim = 3
+        self.global_feature_dim = 4
         
-        # 1. Shared Encoder (特征提取器)
-        # 作用：把每个 Bin 的原始数据映射为高维语义向量
-        # self.bin_proj = nn.Linear(hidden_sizes[1], hidden_sizes[1])
-        # self.item_proj = nn.Linear(hidden_sizes[1], hidden_sizes[1])
+        # Encoders with normalization
         self.bin_encoder = binCNN(hmap_size=(10, 10), embedding_dim=hidden_sizes[1])
+        self.bin_norm = nn.LayerNorm(hidden_sizes[1])
+        
         self.item_encoder = nn.Sequential(
             nn.Linear(self.item_feature_dim, hidden_sizes[0]),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_sizes[0], hidden_sizes[1]//2)
+            nn.ReLU(),
+            nn.Linear(hidden_sizes[0], hidden_sizes[1]//2),
+            nn.LayerNorm(hidden_sizes[1]//2)
         )
+        
         self.global_encoder = nn.Sequential(
             nn.Linear(self.global_feature_dim, hidden_sizes[0]//2),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(hidden_sizes[0]//2, hidden_sizes[1]//2),
             nn.LayerNorm(hidden_sizes[1]//2)
         )
         
-        # self.bin_aggregator = nn.Sequential(
-        #     nn.Linear(hidden_sizes[1], hidden_sizes[1]),
-        #     nn.ReLU()
-        # ) #TODO：first don't use aggregator
+        # Statistical aggregation: mean, std, max, min
+        stat_features_dim = hidden_sizes[1] * 4
+        value_input_dim = stat_features_dim + hidden_sizes[1]//2 + hidden_sizes[1]//2
         
-        value_input_dim = hidden_sizes[1] + hidden_sizes[1]//2 + hidden_sizes[1]//2
+        # Simple value networks
         self.net_list: list[nn.Module] = []
         for idx in range(self._num_critics):
             value_head = nn.Sequential(
-            nn.Linear(value_input_dim, hidden_sizes[1]),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_sizes[1], hidden_sizes[1]//2),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_sizes[1]//2, 1)
-        )
+                nn.Linear(value_input_dim, hidden_sizes[1]),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(hidden_sizes[1], hidden_sizes[1]//2),
+                nn.ReLU(),
+                nn.Linear(hidden_sizes[1]//2, 1)
+            )
             self.net_list.append(value_head)
             self.add_module(f'critic_{idx}', value_head)
+        
         self._init_weights()
+        self._log_counter = 0
 
     def _init_weights(self):
         for m in self.modules():
@@ -310,20 +422,19 @@ class BSCritic(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
         
+        # Standard initialization for final layer (gain=1.0, not 0.01)
         for critic in self.net_list:
             nn.init.orthogonal_(critic[-1].weight, gain=1.0)
             nn.init.constant_(critic[-1].bias, 0.0)
     
     def forward(self, obs: Union[np.ndarray, torch.Tensor], **kwargs) -> torch.Tensor:
-        # #region agent log
         import json
-        import os
-        log_path = '/home/qxt0570/code/GOPT/.cursor/debug3.log'
-        should_log = hasattr(self, '_log_counter') and self._log_counter % 50 == 0
-        if not hasattr(self, '_log_counter'):
-            self._log_counter = 0
+        log_path = '/home/qxt0570/code/MultiGOPT/.cursor/debug3.log'
+        import pathlib
+        log_dir = pathlib.Path(log_path).parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        should_log = self._log_counter % 50 == 0
         self._log_counter += 1
-        # #endregion
         
         if not isinstance(obs, torch.Tensor):
             obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
@@ -333,19 +444,20 @@ class BSCritic(nn.Module):
             obs = obs.to(device)
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
+        
         mask, bin_feats, item_feats, global_feats = obs_processor(obs, self.num_bins, self.bin_state_dim)
-        N = self.num_bins
         
-        bin_embeddings = self.bin_encoder(bin_feats)  # (batch_size, num_bins, hidden_size)
+        # Encode features
+        bin_embeddings = self.bin_encoder(bin_feats)
+        bin_embeddings = self.bin_norm(bin_embeddings)
         
-        # #region agent log
         if should_log:
             with open(log_path, 'a') as f:
                 f.write(json.dumps({
                     'sessionId': 'debug-session',
                     'runId': 'run1',
                     'hypothesisId': 'C',
-                    'location': 'categorical_actor.py:277',
+                    'location': 'simplified_critic:forward',
                     'message': 'bin_embeddings_stats',
                     'data': {
                         'mean': float(bin_embeddings.mean().item()),
@@ -356,33 +468,43 @@ class BSCritic(nn.Module):
                     },
                     'timestamp': int(time.time() * 1000)
                 }) + '\n')
-        # #endregion
+        
+        # Statistical aggregation
         if mask is not None:
-            mask_expanded = mask.unsqueeze(-1).float() # (B, N, 1)
-            bin_embeddings = bin_embeddings * mask_expanded # 把无效 Bin 置 0
+            mask_expanded = mask.unsqueeze(-1).float()
+            masked_embeddings = bin_embeddings * mask_expanded
             
-            # Sum Pooling
-            bin_sum = bin_embeddings.sum(dim=1) # (B, H)
+            valid_count = mask_expanded.sum(dim=1).clamp(min=1.0)
+            bin_mean = masked_embeddings.sum(dim=1) / valid_count
             
-            # Count valid bins (clamp to avoid div by zero)
-            mask_count = mask_expanded.sum(dim=1).clamp(min=1.0)
+            bin_centered = masked_embeddings - bin_mean.unsqueeze(1) * mask_expanded
+            bin_var = (bin_centered ** 2).sum(dim=1) / valid_count
+            bin_std = torch.sqrt(bin_var + 1e-8)
             
-            # Mean Pooling
-            bin_pooled = bin_sum / mask_count # (B, H)
+            bin_max = masked_embeddings.max(dim=1)[0]
+            
+            large_value = 1e6
+            mask = mask.bool()
+            bin_min_input = masked_embeddings + (~mask.unsqueeze(-1)) * large_value
+            bin_min = bin_min_input.min(dim=1)[0]
+            all_masked = (mask_expanded.sum(dim=1) == 0).float()
+            bin_min = bin_min * (1 - all_masked) + bin_mean * all_masked
         else:
-            bin_pooled = bin_embeddings.mean(dim=1) # (B, H)
+            bin_mean = bin_embeddings.mean(dim=1)
+            bin_std = bin_embeddings.std(dim=1)
+            bin_max = bin_embeddings.max(dim=1)[0]
+            bin_min = bin_embeddings.min(dim=1)[0]
         
+        bin_stat_features = torch.cat([bin_mean, bin_std, bin_max, bin_min], dim=-1)
         
-        item_embeddings = self.item_encoder(item_feats)  # (batch_size, 1, hidden_size)
-        # item_exp = item_embeddings.expand(-1, N, -1)  # (batch_size, num_bins, hidden_size)
+        item_embeddings = self.item_encoder(item_feats)
+        global_embeddings = self.global_encoder(global_feats)
         
-        global_embeddings = self.global_encoder(global_feats)  # (batch_size, hidden_size//2)
+        combined_features = torch.cat([bin_stat_features, item_embeddings, global_embeddings], dim=-1)
         
-        
-        combined_features = torch.cat([bin_pooled, item_embeddings, global_embeddings], dim=-1)  # (batch_size, 2*H + H//2)
         res = []
         for critic in self.net_list:
             value = critic(combined_features)
             res.append(torch.squeeze(value, -1))
         
-        return res # expect (batch_size, 1) in omni safe
+        return res

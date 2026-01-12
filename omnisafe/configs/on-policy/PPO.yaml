@@ -35,7 +35,7 @@ defaults:
     # number of iterations to update the policy
     update_iters: 10
     # batch size for each iteration
-    batch_size: 512
+    batch_size: 2048
     # target kl divergence
     target_kl: 0.05
     # entropy coefficient
@@ -65,7 +65,7 @@ defaults:
     # lambda for cost gae
     lam_c: 0.95
     # clip ratio
-    clip: 0.1
+    clip: 0.2
     # advantage estimation method, options: gae, retrace
     adv_estimation_method: gae
     # standardize reward advantage
