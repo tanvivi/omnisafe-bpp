@@ -63,8 +63,27 @@ class PPO(PolicyGradient):
         Returns:
             The loss of pi/actor.
         """
+        # Compute new policy distribution
         distribution = self._actor_critic.actor(obs)
+
+        # CRITICAL: Compute log_prob using the distribution we just computed
+        # The log_prob() method uses the cached distribution from forward()
         logp_ = self._actor_critic.actor.log_prob(act)
+
+        # Debug: verify that we're using the correct distribution
+        if not hasattr(self, '_ppo_debug_printed'):
+            self._ppo_debug_printed = True
+            print(f"\n🔍 [PPO DEBUG] Shapes:")
+            print(f"  obs.shape = {obs.shape}")
+            print(f"  act.shape = {act.shape}")
+            print(f"  logp.shape = {logp.shape} (from buffer, old policy)")
+            print(f"  logp_.shape = {logp_.shape} (new policy)")
+            print(f"  distribution.batch_shape = {distribution.batch_shape}")
+            print(f"\n📊 [PPO DEBUG] Values (first 5):")
+            print(f"  logp (old) = {logp[:5].cpu().numpy()}")
+            print(f"  logp_ (new) = {logp_[:5].detach().cpu().numpy()}")
+            print(f"  diff = {(logp_ - logp)[:5].detach().cpu().numpy()}")
+            print(f"  ratio = {torch.exp(logp_ - logp)[:5].detach().cpu().numpy()}\n")
         
         # with torch.no_grad():
         #     dist = distribution  # already computed

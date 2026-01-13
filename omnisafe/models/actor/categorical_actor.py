@@ -285,28 +285,36 @@ class CategoricalActor(nn.Module):
         return action.squeeze(-1) if action.dim() > 1 else action
     
     def log_prob(self, act):
+        """Compute log probability of actions.
+
+        CRITICAL: This method uses the distribution from the most recent forward() or predict() call.
+        In PPO, you MUST call forward() immediately before log_prob() to ensure the distribution
+        corresponds to the current policy, not a stale cached version.
+
+        Args:
+            act: Action tensor to compute log probability for
+
+        Returns:
+            Log probability of the actions under the current distribution
+        """
         assert self._after_inference, "Must call forward() or predict() before log_prob()"
+        assert self._current_dist is not None, "Distribution not initialized"
+
+        # Reset state after computing log_prob
         self._after_inference = False
-        if not hasattr(self, '_debug_printed'):
-            self._debug_printed = True  # 只打印一次，防止刷屏
-            print("\n🔍 [DEBUG] log_prob Shape Check:")
-            print(f"  1. Dist Batch Shape: {self._current_dist.batch_shape}")
-            print(f"  2. Input Action Shape: {act.shape}")
-        # --- 调试代码结束 ---
-        
+
+        # Ensure action has correct shape (squeeze if needed)
         if act.dim() > 1:
             act = act.squeeze(-1)
 
-        if not hasattr(self, '_debug_printed_2'):
-            self._debug_printed_2 = True
-            print(f"  3. Squeezed Action Shape: {act.shape}")
-            # 检查是否匹配
-            if act.shape != self._current_dist.batch_shape:
-                print(f"  🚨 CRITICAL MISMATCH: Action {act.shape} != Dist {self._current_dist.batch_shape}")
-                print("  这会导致 PyTorch 生成 [B, B] 的巨大矩阵，引发 KL 爆炸！")
-            else:
-                print(f"  ✅ Match: Action {act.shape} == Dist {self._current_dist.batch_shape}")
-            print("-" * 30 + "\n")
+        # Verify shapes match to prevent broadcasting errors
+        if act.shape != self._current_dist.batch_shape:
+            raise ValueError(
+                f"Action shape {act.shape} does not match distribution batch shape "
+                f"{self._current_dist.batch_shape}. This would cause incorrect broadcasting "
+                f"and lead to KL divergence explosion."
+            )
+
         return self._current_dist.log_prob(act.long())
     
     def _log_diagnostics(self, logits: torch.Tensor, mask: torch.Tensor):

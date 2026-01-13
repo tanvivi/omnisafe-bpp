@@ -410,11 +410,33 @@ class PolicyGradient(BaseAlgo):
 
             new_distribution = self._actor_critic.actor(original_obs)
 
-            kl = (
-                torch.distributions.kl.kl_divergence(old_distribution, new_distribution)
-                .sum(-1, keepdim=True)
-                .mean()
-            )
+            # Compute KL divergence
+            kl_per_sample = torch.distributions.kl.kl_divergence(old_distribution, new_distribution)
+
+            # Debug KL computation
+            if update_counts == 0 and not hasattr(self, '_kl_debug_printed'):
+                self._kl_debug_printed = True
+                print(f"\n🔍 [KL DEBUG] Distribution shapes:")
+                print(f"  old_distribution.batch_shape = {old_distribution.batch_shape}")
+                print(f"  new_distribution.batch_shape = {new_distribution.batch_shape}")
+                print(f"  old_distribution.logits.shape = {old_distribution.logits.shape}")
+                print(f"  new_distribution.logits.shape = {new_distribution.logits.shape}")
+                print(f"  kl_per_sample.shape = {kl_per_sample.shape}")
+                print(f"\n📊 [KL DEBUG] KL statistics:")
+                print(f"  kl_per_sample: min={kl_per_sample.min().item():.3f}, "
+                      f"max={kl_per_sample.max().item():.3f}, "
+                      f"mean={kl_per_sample.mean().item():.3f}, "
+                      f"std={kl_per_sample.std().item():.3f}")
+                print(f"  First 10 KL values: {kl_per_sample[:10].detach().cpu().numpy()}")
+                print(f"\n🔍 [KL DEBUG] Logits difference:")
+                logits_diff = (new_distribution.logits - old_distribution.logits).abs()
+                print(f"  |logits_new - logits_old|: mean={logits_diff.mean().item():.6f}, "
+                      f"max={logits_diff.max().item():.6f}\n")
+
+            # Compute mean KL divergence across all samples
+            # kl_per_sample has shape [batch_size] for Categorical distributions
+            # We want the average KL, not the sum
+            kl = kl_per_sample.mean()
             kl = distributed.dist_avg(kl)
 
             final_kl = kl.item()
