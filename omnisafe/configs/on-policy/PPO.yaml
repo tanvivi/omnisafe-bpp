@@ -27,7 +27,7 @@ defaults:
     # number of parallel agent, similar to a3c
     parallel: 1
     # total number of steps to train
-    total_steps: 10000000
+    total_steps: 4000000
   # algorithm configurations
   algo_cfgs:
     # number of steps to update the policy
@@ -76,6 +76,8 @@ defaults:
     penalty_coef: 0.0
     # use cost
     use_cost: False
+    early_stop_entropy_threshold: 0.05  # Stop if entropy drops below this (set to None to disable)
+    early_stop_patience: 10
   # logger configurations
   logger_cfgs:
     # use wandb for logging

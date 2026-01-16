@@ -255,13 +255,22 @@ class PolicyGradient(BaseAlgo):
         """
         start_time = time.time()
         self._logger.log('INFO: Start training')
-        
-        # self._logger.log('INFO: running sanity check')
-        # sanity_passed = self._sanity_check()
-        # if not sanity_passed:
-        #     self._logger.log('ERROR: Sanity check failed, aborting training.')
-        #     return 0.0, 0.0, 0.0
-        # self._logger.log('INFO: Sanity check passed, proceeding with training.')
+
+        # === Early stopping and best model saving configuration ===
+        # Get early stopping config from algo_cfgs, with defaults
+        early_stop_entropy_threshold = getattr(
+            self._cfgs.algo_cfgs, 'early_stop_entropy_threshold', None
+        )
+        early_stop_patience = getattr(
+            self._cfgs.algo_cfgs, 'early_stop_patience', 10
+        )
+
+        # Track best model
+        best_ep_ret = float('-inf')
+        best_epoch = -1
+
+        # Track entropy for early stopping
+        low_entropy_count = 0
 
         for epoch in range(self._cfgs.train_cfgs.epochs):
             epoch_time = time.time()
@@ -302,11 +311,52 @@ class PolicyGradient(BaseAlgo):
 
             self._logger.dump_tabular()
 
-            # save model to disk
+            # === Save best model based on EpRet ===
+            current_ep_ret = self._logger.get_stats('Metrics/EpRet')[0]
+            if current_ep_ret > best_ep_ret:
+                best_ep_ret = current_ep_ret
+                best_epoch = epoch
+                self._save_model('best')
+                self._logger.log(
+                    f'INFO: New best model saved at epoch {epoch} with EpRet={current_ep_ret:.4f}',
+                    'green',
+                )
+
+            # save model to disk (periodic checkpoint)
             if (epoch + 1) % self._cfgs.logger_cfgs.save_model_freq == 0 or (
                 epoch + 1
             ) == self._cfgs.train_cfgs.epochs:
                 self._logger.torch_save()
+
+            # === Early stopping based on entropy ===
+            if early_stop_entropy_threshold is not None:
+                current_entropy = self._logger.get_stats('Train/Entropy')[0]
+                if current_entropy < early_stop_entropy_threshold:
+                    low_entropy_count += 1
+                    self._logger.log(
+                        f'WARNING: Low entropy detected ({current_entropy:.4f} < {early_stop_entropy_threshold}), '
+                        f'count={low_entropy_count}/{early_stop_patience}',
+                        'yellow',
+                    )
+                    if low_entropy_count >= early_stop_patience:
+                        self._logger.log(
+                            f'INFO: Early stopping triggered at epoch {epoch} due to low entropy '
+                            f'({current_entropy:.4f} < {early_stop_entropy_threshold}) '
+                            f'for {early_stop_patience} consecutive epochs.',
+                            'red',
+                            bold=True,
+                        )
+                        break
+                else:
+                    low_entropy_count = 0  # Reset counter if entropy recovers
+
+        # === Save final model ===
+        self._save_model('final')
+        self._logger.log(
+            f'INFO: Final model saved. Best model was at epoch {best_epoch} with EpRet={best_ep_ret:.4f}',
+            'cyan',
+            bold=True,
+        )
 
         ep_ret = self._logger.get_stats('Metrics/EpRet')[0]
         ep_cost = self._logger.get_stats('Metrics/EpCost')[0]
@@ -315,6 +365,31 @@ class PolicyGradient(BaseAlgo):
         self._env.close()
 
         return ep_ret, ep_cost, ep_len
+
+    def _save_model(self, tag: str) -> None:
+        """Save model with a specific tag (e.g., 'best', 'final').
+
+        Args:
+            tag: A string tag for the saved model file (e.g., 'best', 'final').
+        """
+        import os
+
+        # Build what_to_save dict (same logic as _init_log)
+        what_to_save: dict[str, Any] = {}
+        what_to_save['pi'] = self._actor_critic.actor
+        if self._cfgs.algo_cfgs.obs_normalize:
+            obs_normalizer = self._env.save()['obs_normalizer']
+            what_to_save['obs_normalizer'] = obs_normalizer
+
+        path = os.path.join(self._logger.log_dir, 'torch_save', f'model_{tag}.pt')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        params = {
+            k: v.state_dict() if hasattr(v, 'state_dict') else v
+            for k, v in what_to_save.items()
+        }
+        torch.save(params, path)
+        self._logger.log(f'INFO: Model saved to {path}', 'green')
 
     def _update(self, epoch) -> None:
         """Update actor, critic.
